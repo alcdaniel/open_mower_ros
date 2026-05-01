@@ -404,9 +404,114 @@ rosdep install --from-paths src --ignore-src --rosdistro "${ROS_DISTRO}" --defau
   echo "rosdep could not resolve every dependency. Continuing because core ROS dependencies were installed explicitly."
 }
 
-if [[ "${COPY_CONFIG}" -eq 1 && ! -f "${REPO_ROOT}/mower_config.sh" ]]; then
-  echo "Creating mower_config.sh from example. Edit it before running the mower."
-  cp "${REPO_ROOT}/src/open_mower/config/mower_config.sh.example" "${REPO_ROOT}/mower_config.sh"
+setup_mower_config() {
+  local config="${REPO_ROOT}/mower_config.sh"
+
+  if [[ ! -f "${config}" ]]; then
+    echo "Creating mower_config.sh from example."
+    cp "${REPO_ROOT}/config/mower_config.sh.example" "${config}"
+  fi
+
+  # Ensure OM_MOWER is set (uncomment if commented, default to CUSTOM)
+  if grep -qE '^#?\s*export OM_MOWER=' "${config}"; then
+    sed -i 's/^#\s*export OM_MOWER=.*/export OM_MOWER="CUSTOM"/' "${config}"
+  else
+    echo 'export OM_MOWER="CUSTOM"' >> "${config}"
+  fi
+
+  # Ensure OM_MOWER_ESC_TYPE is set
+  if grep -qE '^#?\s*export OM_MOWER_ESC_TYPE=' "${config}"; then
+    sed -i 's/^#\s*export OM_MOWER_ESC_TYPE=.*/export OM_MOWER_ESC_TYPE="xesc_mini"/' "${config}"
+  else
+    echo 'export OM_MOWER_ESC_TYPE="xesc_mini"' >> "${config}"
+  fi
+
+  # Remove any previous platform block appended by this script
+  grep -v 'Platform config (auto)\|^export HARDWARE_PLATFORM=\|^export OM_V2=\|^export MOWER=\$OM_MOWER\|^export ESC_TYPE=\$OM_MOWER_ESC_TYPE\|^export PARAMS_PATH=\|^export RECORDINGS_PATH=' \
+    "${config}" > /tmp/_mower_config_clean.sh
+  cp /tmp/_mower_config_clean.sh "${config}"
+
+  cat >> "${config}" << 'PLATFORM_BLOCK'
+
+# Platform config (auto) — added by setup_raspberry_ubuntu.sh
+export HARDWARE_PLATFORM=2
+export OM_V2=True
+export MOWER=$OM_MOWER
+export ESC_TYPE=$OM_MOWER_ESC_TYPE
+export PARAMS_PATH=$HOME
+export RECORDINGS_PATH=$HOME
+PLATFORM_BLOCK
+
+  # CUSTOM mower: create ~/mower_params/default_environment.sh if missing
+  mkdir -p "${HOME}/mower_params"
+  if [[ ! -f "${HOME}/mower_params/default_environment.sh" ]]; then
+    cat > "${HOME}/mower_params/default_environment.sh" << 'MOWER_ENV'
+# Custom mower hardware defaults — adjust to match your robot
+export OM_ANTENNA_OFFSET_X=${OM_ANTENNA_OFFSET_X:-0.3}
+export OM_ANTENNA_OFFSET_Y=${OM_ANTENNA_OFFSET_Y:-0.0}
+export OM_WHEEL_DISTANCE_M=${OM_WHEEL_DISTANCE_M:-0.325}
+export OM_WHEEL_TICKS_PER_M=${OM_WHEEL_TICKS_PER_M:-1600.0}
+MOWER_ENV
+    echo "Created ~/mower_params/default_environment.sh — adjust wheel/antenna values for your hardware."
+  fi
+
+  # Create ~/custom_params.yaml if missing (required for MOWER=CUSTOM)
+  if [[ ! -f "${HOME}/custom_params.yaml" ]]; then
+    cat > "${HOME}/custom_params.yaml" << 'CUSTOM_YAML'
+# Custom mower params — adjust to match your robot
+ll:
+  services:
+    sound:
+      language: en
+      volume: -1
+    gps:
+      baud_rate: 921600
+      protocol: UBX
+      datum_height: 0
+      absolute_coords: true
+    imu:
+      axis_config: +X-Y-Z
+    power:
+      battery_critical_high_voltage: -1
+      charge_critical_high_voltage: -1
+      charge_critical_high_current: -1
+
+xbot_positioning:
+  max_gps_accuracy: 0.2
+  debug: false
+
+mower_logic:
+  automatic_mode: 0
+  docking_approach_distance: 1.5
+  docking_extra_time: 0
+  docking_retry_count: 4
+  docking_redock: false
+  outline_overlap_count: 0
+  mow_angle_offset: 0
+  mow_angle_offset_is_absolute: false
+  mow_angle_increment: 0
+  gps_wait_time: 10.0
+  gps_timeout: 10.0
+  rain_mode: 0
+  outline_count: 4
+  outline_offset: 0.05
+  tool_width: 0.13
+  battery_full_voltage: 28.5
+  battery_empty_voltage: 24.0
+  battery_critical_voltage: 23.0
+  mow_motor_temp_high: 80.0
+  mow_motor_temp_low: 40.0
+  undock_distance: 2.0
+  docking_distance: 1.0
+CUSTOM_YAML
+    echo "Created ~/custom_params.yaml — adjust battery/tool/dock values for your hardware."
+  fi
+
+  echo "mower_config.sh configured."
+}
+
+if [[ "${COPY_CONFIG}" -eq 1 ]]; then
+  setup_mower_config
 fi
 
 write_default_env

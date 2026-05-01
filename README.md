@@ -197,6 +197,71 @@ cp src/open_mower/config/mower_config.sh.example mower_config.sh
 source mower_config.sh # it's expected to adjust the file
 ```
 
+#### Inspect the running system
+
+**Nodes and topics overview:**
+
+```bash
+# All active nodes
+rosnode list
+
+# All active topics
+rostopic list
+
+# Graph of nodes + topics (requires graphviz)
+rosrun rqt_graph rqt_graph
+```
+
+**Monitor a topic:**
+
+```bash
+# Print messages on a topic (replace <topic> with the actual name)
+rostopic echo <topic>
+
+# Show publish rate and bandwidth
+rostopic hz <topic>
+rostopic bw <topic>
+
+# Show message type and field definitions
+rostopic type <topic>
+rosmsg show $(rostopic type <topic>)
+```
+
+**Useful topics to watch:**
+
+```bash
+# Mower state machine
+rostopic echo /mower_logic/current_state
+
+# GPS position
+rostopic echo /xbot_positioning/xb_pose
+
+# Battery / power
+rostopic echo /ll/power
+
+# Emergency stop
+rostopic echo /ll/emergency
+
+# Velocity commands
+rostopic echo /joy_vel
+
+# iOS bridge status (when running)
+rostopic echo /mower_logic/current_state
+```
+
+**Nodes detail:**
+
+```bash
+# Info on a specific node (subscriptions, publications, services)
+rosnode info <node_name>
+
+# All active services
+rosservice list
+
+# Call a service (example: pause mowing)
+rosservice call /mower_logic/mowing/pause
+```
+
 ### Running in a container
 
 TBD (no automated image build yet)
