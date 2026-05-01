@@ -130,6 +130,39 @@ git submodule update --init --recursive
 rosdep install --from-paths src --ignore-src --default-yes
 ```
 
+If `rosdep install` reports unresolved keys (typical: `nmea_msgs`, `imu_tools`,
+`twist_mux_msgs`, `paho-mqtt-cpp`, `pcl_conversions`, `serial`,
+`rtcm_msgs`, `rosbridge_server`), install them directly via apt:
+
+```bash
+sudo apt install -y \
+  ros-noetic-actionlib \
+  ros-noetic-costmap-2d \
+  ros-noetic-dynamic-reconfigure \
+  ros-noetic-grid-map \
+  ros-noetic-grid-map-msgs \
+  ros-noetic-imu-tools \
+  ros-noetic-mbf-msgs \
+  ros-noetic-move-base-flex \
+  ros-noetic-nav-core \
+  ros-noetic-nmea-msgs \
+  ros-noetic-paho-mqtt-c \
+  ros-noetic-paho-mqtt-cpp \
+  ros-noetic-pcl-conversions \
+  ros-noetic-pluginlib \
+  ros-noetic-robot-localization \
+  ros-noetic-rosbridge-server \
+  ros-noetic-rtcm-msgs \
+  ros-noetic-serial \
+  ros-noetic-tf \
+  ros-noetic-tf2-eigen \
+  ros-noetic-twist-mux-msgs \
+  libgeographic-dev \
+  libopencv-dev \
+  libwebsocketpp-dev \
+  python3-opencv
+```
+
 #### Build workspace
 
 To compile all ROS packages in this catkin workspace, run this from the
