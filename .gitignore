@@ -61,3 +61,6 @@ cmake-build-debug/
 .vscode
 .venv
 src/cmake-build-debug-ros
+
+# Local Raspberry/runtime configuration. Keep credentials out of git.
+.env

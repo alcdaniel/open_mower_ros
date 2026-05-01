@@ -31,6 +31,40 @@ The Docker images have a `-legacy` suffix or `releases-` prefix: (e.g. `releases
 
 OpenMower requires ROS Noetic. ([installation instruction](http://wiki.ros.org/noetic/Installation)) There is no distributed release package yet, for development and test purpose it's best to build the workspace on your own.
 
+For a Raspberry Pi running Ubuntu 20.04/Focal, this fork includes a helper script
+which installs ROS Noetic, initializes `rosdep`, fetches submodules, installs
+workspace dependencies, creates `mower_config.sh` when missing, and builds the
+catkin workspace:
+
+```bash
+./utils/scripts/setup_raspberry_ubuntu.sh
+```
+
+For a lighter dependency-only pass, use:
+
+```bash
+./utils/scripts/setup_raspberry_ubuntu.sh --skip-build
+```
+
+The script also creates a local `.env` file when it does not exist. This file is
+ignored by git and must be edited on the Raspberry with the Wi-Fi credentials
+used to reach the internet/NTRIP caster:
+
+```bash
+MOWER_WIFI_SSID="your-wifi-ssid"
+MOWER_WIFI_PASSWORD="your-wifi-password"
+MOWER_WIFI_CONNECTION_NAME="openmower-wifi"
+```
+
+It also installs `openmower-wifi.service`, which reads `.env` on boot and uses
+NetworkManager to connect automatically. If the SSID/password are still empty or
+left as `CHANGE_ME_*`, the service logs a reminder and exits without changing
+Wi-Fi state:
+
+```bash
+journalctl -u openmower-wifi.service -b
+```
+
 #### Fetch Dependencies
 
 Before building, you need to fetch this project's dependencies. The best way to do this is by using rosdep:
