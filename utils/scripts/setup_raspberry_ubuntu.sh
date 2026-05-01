@@ -376,6 +376,10 @@ if [[ "${SKIP_ROS_INSTALL}" -ne 1 ]]; then
     "ros-${ROS_DISTRO}-tf2-geometry-msgs"
     "ros-${ROS_DISTRO}-tf2-ros"
     "ros-${ROS_DISTRO}-twist-mux-msgs"
+    "ros-${ROS_DISTRO}-twist-mux"
+    "ros-${ROS_DISTRO}-joy"
+    "ros-${ROS_DISTRO}-teleop-twist-joy"
+    psmisc
     python3-rosdep
   )
   if [[ "${WITH_RVIZ}" -eq 1 ]]; then

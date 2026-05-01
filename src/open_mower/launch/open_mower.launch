@@ -29,7 +29,10 @@
           respawn_delay="10" unless="$(eval optenv('OM_HEATMAP_SENSOR_IDS', 'UNSET') == 'UNSET')">
     </node>
 
-    <node pkg="xbot_remote" type="xbot_remote" name="xbot_remote" output="screen" respawn="true" respawn_delay="20">
+    <!-- launch-prefix kills any lingering process on port 9002 before binding -->
+    <node pkg="xbot_remote" type="xbot_remote" name="xbot_remote" output="screen"
+          respawn="true" respawn_delay="15"
+          launch-prefix="bash -c 'fuser -k 9002/tcp 2>/dev/null; sleep 0.5; exec &quot;$@&quot;' --">
         <remap from="/xbot_remote/cmd_vel" to="/joy_vel"/>
     </node>
 
