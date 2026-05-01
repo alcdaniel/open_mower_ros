@@ -107,6 +107,15 @@ NTRIP_CASTER_PORT="2101"
 NTRIP_MOUNTPOINT=""
 NTRIP_USERNAME=""
 NTRIP_PASSWORD=""
+
+# iOS app bridge. The app can use the discovered host, or the manual URL:
+# http://<raspberry-ip>:8080
+OM_IOS_BRIDGE_ENABLE="True"
+OM_IOS_BRIDGE_HOST="0.0.0.0"
+OM_IOS_BRIDGE_PORT="8080"
+OM_IOS_BRIDGE_NAME="lawnmower"
+OM_IOS_BRIDGE_TOKEN=""
+OM_IOS_UDP_BEACON_ENABLE="True"
 EOF
 }
 
@@ -222,8 +231,7 @@ if [[ "${SKIP_ROS_INSTALL}" -ne 1 ]]; then
   sudo apt-get install --yes \
     build-essential \
     network-manager \
-    python3-pip \
-    python3-rosdep
+    python3-pip
 
   if [[ ! -f /usr/share/keyrings/ros-archive-keyring.gpg ]]; then
     echo "Installing ROS apt repository key..."
@@ -243,6 +251,7 @@ if [[ "${SKIP_ROS_INSTALL}" -ne 1 ]]; then
   ros_packages=(
     "ros-${ROS_DISTRO}-catkin"
     "ros-${ROS_DISTRO}-ros-base"
+    python3-rosdep
   )
   if [[ "${WITH_RVIZ}" -eq 1 ]]; then
     ros_packages+=("ros-${ROS_DISTRO}-rviz")
@@ -291,7 +300,9 @@ Before launching OpenMower in a new shell:
   source /opt/ros/${ROS_DISTRO}/setup.bash
   source devel/setup.bash
   source mower_config.sh
+  set -a
   source .env
+  set +a
 
 Then launch:
   roslaunch open_mower open_mower.launch

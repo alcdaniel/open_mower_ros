@@ -65,6 +65,53 @@ Wi-Fi state:
 journalctl -u openmower-wifi.service -b
 ```
 
+### iOS app bridge
+
+This fork starts a small ROS HTTP bridge for the current `LawnMowerControl` iOS
+app when `open_mower.launch` runs. It exposes:
+
+```text
+GET  /api/health
+GET  /api/status
+GET  /api/telemetry
+GET  /api/settings
+POST /api/command
+POST /api/manual
+POST /api/settings
+```
+
+By default the bridge listens on port `8080` and sends UDP discovery beacons that
+the app can pick up. If discovery is not available, set the app host manually:
+
+```text
+http://<raspberry-ip>:8080
+```
+
+The setup script writes these optional values to `.env`:
+
+```bash
+OM_IOS_BRIDGE_ENABLE="True"
+OM_IOS_BRIDGE_HOST="0.0.0.0"
+OM_IOS_BRIDGE_PORT="8080"
+OM_IOS_BRIDGE_NAME="lawnmower"
+OM_IOS_BRIDGE_TOKEN=""
+OM_IOS_UDP_BEACON_ENABLE="True"
+```
+
+When launching manually, export `.env` values before `roslaunch`:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+If `OM_IOS_BRIDGE_TOKEN` is filled, the app must use the same token in its
+settings. The bridge translates app commands to OpenMower ROS actions/services;
+sensor fields that do not exist in OpenMower yet, such as Mega sonar/bumper
+telemetry, are returned as safe defaults until the Arduino/Raspberry bridge
+publishes them.
+
 #### Fetch Dependencies
 
 Before building, you need to fetch this project's dependencies. The best way to do this is by using rosdep:
@@ -85,10 +132,19 @@ rosdep install --from-paths src --ignore-src --default-yes
 
 #### Build workspace
 
-Just build as any other ROS workspace: `catkin_make`
-Once it's done, another step is to source workspace env vars:
+To compile all ROS packages in this catkin workspace, run this from the
+repository root:
 
 ```bash
+cd ~/open_mower_ros
+source /opt/ros/noetic/setup.bash
+catkin_make
+```
+
+Once it's done, source the workspace env vars:
+
+```bash
+cd ~/open_mower_ros
 source devel/setup.bash
 ```
 

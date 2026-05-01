@@ -1,0 +1,13 @@
+<launch>
+    <node pkg="mower_ios_bridge" type="mower_ios_bridge_node.py" name="mower_ios_bridge" output="screen"
+          respawn="true" respawn_delay="10">
+        <param name="host" value="$(optenv OM_IOS_BRIDGE_HOST 0.0.0.0)"/>
+        <param name="port" value="$(optenv OM_IOS_BRIDGE_PORT 8080)"/>
+        <param name="discovery_name" value="$(optenv OM_IOS_BRIDGE_NAME lawnmower)"/>
+        <param name="auth_token" value="$(optenv OM_IOS_BRIDGE_TOKEN)"/>
+        <param name="manual_linear_speed" value="$(optenv OM_IOS_MANUAL_LINEAR_SPEED 0.25)"/>
+        <param name="manual_angular_speed" value="$(optenv OM_IOS_MANUAL_ANGULAR_SPEED 0.8)"/>
+        <param name="udp_beacon_enabled" value="$(optenv OM_IOS_UDP_BEACON_ENABLE True)"/>
+        <param name="udp_beacon_port" value="$(optenv OM_IOS_UDP_BEACON_PORT 47820)"/>
+    </node>
+</launch>

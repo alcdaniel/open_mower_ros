@@ -1,0 +1,19 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>mower_ios_bridge</name>
+  <version>0.1.0</version>
+  <description>HTTP bridge for the LawnMowerControl iOS app.</description>
+
+  <maintainer email="daniel@example.com">Daniel</maintainer>
+  <license>GPLv3</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>mower_msgs</exec_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>xbot_msgs</exec_depend>
+
+  <export/>
+</package>

@@ -6,6 +6,7 @@
     <include file="$(find open_mower)/launch/include/_record.launch">
         <arg name="prefix" value="mow_area"/>
     </include>
+    <include if="$(optenv OM_IOS_BRIDGE_ENABLE True)" file="$(find open_mower)/launch/include/_ios_bridge.launch"/>
 
 
     <node pkg="mower_map" type="mower_map_service" name="map_service" output="screen" respawn="true" respawn_delay="10"/>
