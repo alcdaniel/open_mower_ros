@@ -212,6 +212,10 @@ fi
 
 sudo -v
 
+echo "Checking apt/dpkg state..."
+sudo apt-get --fix-broken install --yes
+sudo dpkg --configure -a
+
 if [[ "${SKIP_ROS_INSTALL}" -ne 1 ]]; then
   echo "Installing apt repository tools..."
   sudo apt-get update
