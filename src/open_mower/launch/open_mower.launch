@@ -29,7 +29,7 @@
           respawn_delay="10" unless="$(eval optenv('OM_HEATMAP_SENSOR_IDS', 'UNSET') == 'UNSET')">
     </node>
 
-    <node pkg="xbot_remote" type="xbot_remote" name="xbot_remote" output="screen" respawn="true" respawn_delay="10">
+    <node pkg="xbot_remote" type="xbot_remote" name="xbot_remote" output="screen" respawn="true" respawn_delay="20">
         <remap from="/xbot_remote/cmd_vel" to="/joy_vel"/>
     </node>
 
