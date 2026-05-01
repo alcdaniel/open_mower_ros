@@ -245,7 +245,8 @@ private:
                     ser_.setPort(port_);
                     ser_.setBaudrate(static_cast<uint32_t>(baud_));
                     // Short timeout so read loop releases write_mutex quickly
-                    ser_.setTimeout(serial::Timeout::simpleTimeout(100));
+                    serial::Timeout to = serial::Timeout::simpleTimeout(100);
+                    ser_.setTimeout(to);
                     ser_.open();
                     ser_open_ = true;
                 }
@@ -314,8 +315,8 @@ private:
                 std::lock_guard<std::mutex> lk(state_mutex_);
                 wheel_amps_ = fields.empty() ? 0.0 : std::stod(fields[0]);
                 esc.status  = (mega_state_ == "RUNNING")
-                              ? mower_msgs::ESCStatus::STATUS_RUNNING
-                              : mower_msgs::ESCStatus::STATUS_OK;
+                              ? mower_msgs::ESCStatus::ESC_STATUS_RUNNING
+                              : mower_msgs::ESCStatus::ESC_STATUS_OK;
                 esc.current = static_cast<float>(wheel_amps_ / 2.0);
             }
             pub_esc_l_.publish(esc);
