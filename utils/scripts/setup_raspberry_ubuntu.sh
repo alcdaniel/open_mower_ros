@@ -84,6 +84,42 @@ require_command() {
   fi
 }
 
+remove_conflicting_python_ros_packages() {
+  local legacy_packages=(
+    python3-catkin-pkg
+    python3-rospkg
+    python3-rosdistro
+  )
+  local present=()
+
+  for pkg in "${legacy_packages[@]}"; do
+    if dpkg-query -W -f='${db:Status-Abbrev}' "${pkg}" 2>/dev/null | grep -q '^[ih]'; then
+      present+=("${pkg}")
+    fi
+  done
+
+  if [[ "${#present[@]}" -eq 0 ]]; then
+    return
+  fi
+
+  echo "Force-removing Ubuntu ROS Python packages that conflict with packages.ros.org: ${present[*]}"
+  sudo dpkg --remove --force-depends "${present[@]}" || true
+}
+
+repair_apt_state() {
+  echo "Checking apt/dpkg state..."
+  remove_conflicting_python_ros_packages
+
+  if ! sudo apt-get --fix-broken install --yes; then
+    echo "apt fix-broken failed once; removing known conflicting Python ROS packages and retrying..."
+    remove_conflicting_python_ros_packages
+    sudo apt-get clean
+    sudo apt-get --fix-broken install --yes
+  fi
+
+  sudo dpkg --configure -a
+}
+
 write_default_env() {
   if [[ -f "${ENV_FILE}" ]]; then
     return
@@ -212,9 +248,7 @@ fi
 
 sudo -v
 
-echo "Checking apt/dpkg state..."
-sudo apt-get --fix-broken install --yes
-sudo dpkg --configure -a
+repair_apt_state
 
 if [[ "${SKIP_ROS_INSTALL}" -ne 1 ]]; then
   echo "Installing apt repository tools..."
