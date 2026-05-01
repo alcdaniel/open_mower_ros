@@ -21,19 +21,22 @@
 # 0_9_X_MPU9250: Use this if you have an MPU9250 and have a 0.9.x mainboard (be aware that there are many fake chips on the market. So probably not your hardware version).
 export OM_HARDWARE_VERSION="0_13_X"
 
-# Uncomment and set to coordinates near your future docking station, this will be your map origin.
-# There might be a case that you don't need those if you using OM_USE_RELATIVE_POSITION=True
-export OM_DATUM_LAT=48.CHANGEME
-export OM_DATUM_LONG=11.CHANGEME
+# Coordinates near your docking station — used as map origin.
+# Set to your actual location. Example below is Gijón, Asturias.
+export OM_DATUM_LAT=43.5350
+export OM_DATUM_LONG=-5.6615
 
-# NTRIP Settings
-# Set to False if using external radio plugged into the Ardusimple board.
+# NTRIP Settings — ERGNSS (Instituto Geográfico Nacional, Spain)
+# Caster:    192.148.213.42 : 2101   (same as ntrip.ign.es:2101)
+# Mountpoint: VRS3M  — Virtual Reference Station, RTCM3.2 MSM, GPS+GLONASS+Galileo+BeiDou
+#             Requires sending rover NMEA GGA position (handled automatically by ntrip_client).
+# Auth:      Basic — free registration at https://ergnss.ign.es/gnuserportal/
 export OM_USE_NTRIP=True
-export OM_NTRIP_HOSTNAME=192.168.178.55
+export OM_NTRIP_HOSTNAME=192.148.213.42
 export OM_NTRIP_PORT=2101
-export OM_NTRIP_USER=gps
-export OM_NTRIP_PASSWORD=gps
-export OM_NTRIP_ENDPOINT=BASE1
+export OM_NTRIP_USER=CHANGE_ME
+export OM_NTRIP_PASSWORD=CHANGE_ME
+export OM_NTRIP_ENDPOINT=VRS3M
 export OM_NTRIP_RECONNECT_WAIT_SECONDS=5
 export OM_NTRIP_RECONNECT_MAX=99999
 

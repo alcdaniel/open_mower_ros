@@ -426,6 +426,40 @@ setup_mower_config() {
     echo 'export OM_MOWER_ESC_TYPE="xesc_mini"' >> "${config}"
   fi
 
+  # ── NTRIP: ERGNSS (IGN Spain) ──────────────────────────────────────────────
+  # Server and mountpoint are fixed; user/password come from free registration
+  # at https://ergnss.ign.es/gnuserportal/
+  # Only overwrite if still set to the old placeholder values from the example.
+  _ntrip_sed() {
+    local key="$1" val="$2"
+    if grep -qE "^export ${key}=" "${config}"; then
+      sed -i "s|^export ${key}=.*|export ${key}=${val}|" "${config}"
+    else
+      echo "export ${key}=${val}" >> "${config}"
+    fi
+  }
+  _ntrip_sed OM_USE_NTRIP       True
+  _ntrip_sed OM_NTRIP_HOSTNAME  192.148.213.42
+  _ntrip_sed OM_NTRIP_PORT      2101
+  _ntrip_sed OM_NTRIP_ENDPOINT  VRS3M
+  _ntrip_sed OM_NTRIP_RECONNECT_WAIT_SECONDS 5
+  _ntrip_sed OM_NTRIP_RECONNECT_MAX          99999
+  # Only set user/password if they still hold the old default placeholder values
+  if grep -qE "^export OM_NTRIP_USER=(gps|CHANGE_ME)$" "${config}"; then
+    sed -i "s|^export OM_NTRIP_USER=.*|export OM_NTRIP_USER=CHANGE_ME|" "${config}"
+  fi
+  if grep -qE "^export OM_NTRIP_PASSWORD=(gps|CHANGE_ME)$" "${config}"; then
+    sed -i "s|^export OM_NTRIP_PASSWORD=.*|export OM_NTRIP_PASSWORD=CHANGE_ME|" "${config}"
+  fi
+
+  # ── DATUM: default to Gijón, Asturias ──────────────────────────────────────
+  if grep -qE "^export OM_DATUM_LAT=.*CHANGEME" "${config}"; then
+    sed -i "s|^export OM_DATUM_LAT=.*|export OM_DATUM_LAT=43.5350|" "${config}"
+  fi
+  if grep -qE "^export OM_DATUM_LONG=.*CHANGEME" "${config}"; then
+    sed -i "s|^export OM_DATUM_LONG=.*|export OM_DATUM_LONG=-5.6615|" "${config}"
+  fi
+
   # Remove any previous platform block appended by this script
   grep -v 'Platform config (auto)\|^export HARDWARE_PLATFORM=\|^export OM_V2=\|^export MOWER=\$OM_MOWER\|^export ESC_TYPE=\$OM_MOWER_ESC_TYPE\|^export PARAMS_PATH=\|^export RECORDINGS_PATH=' \
     "${config}" > /tmp/_mower_config_clean.sh
