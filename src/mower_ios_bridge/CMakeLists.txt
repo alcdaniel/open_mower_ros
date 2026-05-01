@@ -9,7 +9,14 @@ find_package(catkin REQUIRED COMPONENTS
   xbot_msgs
 )
 
-catkin_package()
+catkin_package(
+  CATKIN_DEPENDS
+    geometry_msgs
+    mower_msgs
+    rospy
+    std_msgs
+    xbot_msgs
+)
 
 catkin_install_python(PROGRAMS
   scripts/mower_ios_bridge_node.py
