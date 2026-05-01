@@ -21,3 +21,6 @@ topics:
     topic   : override_vel
     timeout : 0.5
     priority: 100
+
+# Locks (required by twist_mux — empty means no locks)
+locks: []
