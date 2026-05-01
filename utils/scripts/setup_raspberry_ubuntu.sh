@@ -204,20 +204,26 @@ fi
 sudo -v
 
 if [[ "${SKIP_ROS_INSTALL}" -ne 1 ]]; then
+  echo "Installing apt repository tools..."
+  sudo apt-get update
+  sudo apt-get install --yes \
+    ca-certificates \
+    curl \
+    gnupg2 \
+    git \
+    lsb-release \
+    software-properties-common
+
+  echo "Ensuring Ubuntu universe repository is enabled..."
+  sudo add-apt-repository --yes universe
+
   echo "Installing base apt packages..."
   sudo apt-get update
   sudo apt-get install --yes \
     build-essential \
-    ca-certificates \
-    curl \
-    git \
-    gnupg2 \
-    lsb-release \
     network-manager \
-    python3-catkin-tools \
     python3-pip \
-    python3-rosdep \
-    python3-vcstool
+    python3-rosdep
 
   if [[ ! -f /usr/share/keyrings/ros-archive-keyring.gpg ]]; then
     echo "Installing ROS apt repository key..."
@@ -234,7 +240,10 @@ if [[ "${SKIP_ROS_INSTALL}" -ne 1 ]]; then
 
   echo "Installing ROS ${ROS_DISTRO}..."
   sudo apt-get update
-  ros_packages=("ros-${ROS_DISTRO}-ros-base")
+  ros_packages=(
+    "ros-${ROS_DISTRO}-catkin"
+    "ros-${ROS_DISTRO}-ros-base"
+  )
   if [[ "${WITH_RVIZ}" -eq 1 ]]; then
     ros_packages+=("ros-${ROS_DISTRO}-rviz")
   fi
