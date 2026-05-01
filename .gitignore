@@ -62,5 +62,9 @@ cmake-build-debug/
 .venv
 src/cmake-build-debug-ros
 
+# macOS metadata files
+.DS_Store
+._*
+
 # Local Raspberry/runtime configuration. Keep credentials out of git.
 .env
