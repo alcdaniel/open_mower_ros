@@ -8,7 +8,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 import rospy
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import Point32, Polygon, Pose, Quaternion, Twist
+from mower_map.msg import MapArea
+from mower_map.srv import (
+    AddMowingAreaSrv,
+    AddMowingAreaSrvRequest,
+    ClearMapSrv,
+    ClearMapSrvRequest,
+    SetDockingPointSrv,
+    SetDockingPointSrvRequest,
+)
 from mower_msgs.msg import Emergency, ESCStatus, HighLevelStatus, Power, Status
 from mower_msgs.srv import HighLevelControlSrv, HighLevelControlSrvRequest, MowerControlSrv
 from sensor_msgs.msg import Imu, Range
@@ -56,6 +65,13 @@ class BridgeState:
         self.mega_compass_deg = 0.0
         self.mega_settings = {}        # key → value string, populated by $CFG frames
 
+        # Map / recording
+        self.map_json = ""             # last value of /mower_map_service/json_map
+        self.map_received_at = 0.0
+        self.recording = None          # None | dict(mode, points, started_at, ...)
+        self.pending_obstacles = []    # list[list[(x,y)]] buffered between mow stop and save
+        self.last_recording_buffer = None  # snapshot of last closed mow session
+
     def update(self, name, msg):
         with self.lock:
             setattr(self, name, msg)
@@ -84,6 +100,12 @@ class BridgeState:
                 "wire_detected": self.wire_detected,
                 "mega_compass_deg": self.mega_compass_deg,
                 "mega_settings": dict(self.mega_settings),
+                "map_json": self.map_json,
+                "map_received_at": self.map_received_at,
+                "recording": dict(self.recording) if self.recording else None,
+                "pending_obstacles_count": len(self.pending_obstacles),
+                "last_buffer_points": (len(self.last_recording_buffer["points"])
+                                       if self.last_recording_buffer else 0),
             }
 
     def set_manual_active(self, active, hold_seconds=2.0):
@@ -115,6 +137,17 @@ class IOSBridge:
 
         self.high_level_srv = rospy.ServiceProxy("/mower_service/high_level_control", HighLevelControlSrv)
         self.mower_control_srv = rospy.ServiceProxy("/ll/_service/mow_enabled", MowerControlSrv)
+        self.add_area_srv = rospy.ServiceProxy("/mower_map_service/add_mowing_area", AddMowingAreaSrv)
+        self.set_dock_srv = rospy.ServiceProxy("/mower_map_service/set_docking_point", SetDockingPointSrv)
+        self.clear_map_srv = rospy.ServiceProxy("/mower_map_service/clear_map", ClearMapSrv)
+
+        # Recording config
+        self.rec_lock = threading.RLock()
+        self.rec_min_distance_m = float(rospy.get_param("~rec_min_distance_m", 0.10))
+        self.rec_sample_hz = float(rospy.get_param("~rec_sample_hz", 4.0))
+        self.rec_close_tolerance_m = float(rospy.get_param("~rec_close_tolerance_m", 0.30))
+        self.rec_min_area_m2 = float(rospy.get_param("~rec_min_area_m2", 0.50))
+        self.rec_require_rtk_fixed = ros_bool(rospy.get_param("~rec_require_rtk_fixed", True))
 
         rospy.Subscriber("/mower_logic/current_state", HighLevelStatus, self.state.update, "high_level")
         rospy.Subscriber("/ll/mower_status", Status, self.state.update, "low_level")
@@ -135,6 +168,13 @@ class IOSBridge:
         rospy.Subscriber("/mega/imu",          Imu,    self._cb_compass_imu)
         rospy.Subscriber("/mega/cfg",          String, self._cb_cfg)
         rospy.Subscriber("/mega/cfg_loaded",   Bool,   self._cb_cfg_loaded)
+
+        # Map (latched topic — last value arrives on subscribe)
+        rospy.Subscriber("/mower_map_service/json_map", String, self._cb_json_map)
+
+        # Recording auto-sampler (4 Hz default)
+        sample_period = max(0.05, 1.0 / max(0.5, self.rec_sample_hz))
+        rospy.Timer(rospy.Duration(sample_period), self._sample_recording)
 
         # Request settings from Mega 3 s after startup (gives Mega time to boot)
         rospy.Timer(rospy.Duration(3.0), self._request_settings, oneshot=True)
@@ -210,6 +250,71 @@ class IOSBridge:
                 body = self._read_json(request)
                 self.handle_setting(body)
                 self._send_json(request, {"ok": True})
+            elif method == "GET" and path == "/api/map":
+                self._send_json(request, self.map_payload())
+            elif method == "GET" and path == "/api/pose":
+                self._send_json(request, self.pose_payload())
+            elif method == "GET" and path == "/api/recording":
+                self._send_json(request, self.recording_status())
+            elif method == "POST" and path == "/api/recording/start":
+                body = self._read_json(request)
+                try:
+                    self._start_recording(str(body.get("mode", "")))
+                    self._send_json(request, {"ok": True, "recording": self.recording_status()})
+                except (RuntimeError, ValueError) as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
+            elif method == "POST" and path == "/api/recording/stop":
+                try:
+                    rec = self._stop_recording()
+                    self._send_json(request, {
+                        "ok": True,
+                        "mode": rec["mode"],
+                        "points": len(rec["points"]),
+                        "recording": self.recording_status(),
+                    })
+                except RuntimeError as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
+            elif method == "POST" and path == "/api/recording/cancel":
+                self._cancel_recording()
+                self._clear_recording_buffer()
+                self._send_json(request, {"ok": True})
+            elif method == "POST" and path == "/api/areas/mowing":
+                body = self._read_json(request)
+                try:
+                    res = self.save_area(body, is_navigation=False)
+                    self._send_json(request, res)
+                except (RuntimeError, ValueError) as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
+            elif method == "POST" and path == "/api/areas/navigation":
+                body = self._read_json(request)
+                try:
+                    res = self.save_area(body, is_navigation=True)
+                    self._send_json(request, res)
+                except (RuntimeError, ValueError) as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
+            elif method == "POST" and path == "/api/dock/here":
+                try:
+                    res = self.set_dock_here()
+                    self._send_json(request, res)
+                except (RuntimeError, ValueError) as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
+            elif method == "POST" and path == "/api/dock":
+                body = self._read_json(request)
+                try:
+                    res = self.set_dock_pose(body)
+                    self._send_json(request, res)
+                except (RuntimeError, ValueError) as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
+            elif method == "POST" and path == "/api/map/clear":
+                body = self._read_json(request)
+                if not body.get("confirm", False):
+                    self._send_json(request, {"ok": False, "error": "Falta confirmación."})
+                else:
+                    try:
+                        self.clear_full_map()
+                        self._send_json(request, {"ok": True})
+                    except RuntimeError as exc:
+                        self._send_json(request, {"ok": False, "error": str(exc)})
             else:
                 self._send_json(request, {"error": "not_found"}, status=404)
         except Exception as exc:
@@ -549,6 +654,372 @@ class IOSBridge:
             deg += 360.0
         with self.state.lock:
             self.state.mega_compass_deg = deg
+
+    # ── Map: incoming JSON ─────────────────────────────────────────────────────
+
+    def _cb_json_map(self, msg):
+        with self.state.lock:
+            self.state.map_json = msg.data
+            self.state.map_received_at = time.time()
+
+    # ── Recording state machine ────────────────────────────────────────────────
+
+    def _sample_recording(self, _event=None):
+        """Periodic sampler. No-op when no session is active."""
+        with self.rec_lock:
+            rec = self.state.recording
+            if not rec:
+                return
+            pose = self.state.snapshot()["pose"]
+            if pose is None:
+                return
+
+            fix = self._gps_fix_type(pose)
+            rec["last_fix"] = fix
+            if self.rec_require_rtk_fixed and fix != "fixed":
+                rec["rtk_lost_count"] = rec.get("rtk_lost_count", 0) + 1
+                return
+
+            x = float(pose.pose.pose.position.x)
+            y = float(pose.pose.pose.position.y)
+
+            pts = rec["points"]
+            if pts:
+                lx, ly = pts[-1]
+                if math.hypot(x - lx, y - ly) < self.rec_min_distance_m:
+                    return
+            pts.append((x, y))
+            rec["sampled_at"] = time.time()
+
+    def _start_recording(self, mode):
+        """mode: 'mow' | 'nav' | 'exclusion'"""
+        with self.rec_lock:
+            if self.state.recording is not None:
+                raise RuntimeError("Ya hay una grabación activa.")
+            if mode not in ("mow", "nav", "exclusion"):
+                raise ValueError("Modo de grabación inválido: {}".format(mode))
+            if mode == "exclusion" and self.state.last_recording_buffer is None:
+                raise RuntimeError(
+                    "Para grabar una exclusión primero debes grabar y cerrar una zona de corte."
+                )
+            self.state.recording = {
+                "mode": mode,
+                "points": [],
+                "started_at": time.time(),
+                "sampled_at": 0.0,
+                "rtk_lost_count": 0,
+                "last_fix": "none",
+            }
+            rospy.loginfo("[ios_bridge] recording started: %s", mode)
+
+    def _stop_recording(self):
+        """Closes session and stores in last_recording_buffer (for mow) or pending_obstacles (for exclusion)."""
+        with self.rec_lock:
+            rec = self.state.recording
+            if rec is None:
+                raise RuntimeError("No hay grabación activa.")
+            self.state.recording = None
+            rospy.loginfo("[ios_bridge] recording stopped: %s (%d pts)",
+                          rec["mode"], len(rec["points"]))
+
+            mode = rec["mode"]
+            if mode == "exclusion":
+                if len(rec["points"]) >= 3:
+                    self.state.pending_obstacles.append(list(rec["points"]))
+            else:
+                # mow / nav: keep as last_recording_buffer (only mow uses pending_obstacles)
+                self.state.last_recording_buffer = {
+                    "mode": mode,
+                    "points": list(rec["points"]),
+                }
+                if mode != "mow":
+                    # nav doesn't use obstacles; clear any stale buffer
+                    self.state.pending_obstacles = []
+            return rec
+
+    def _cancel_recording(self):
+        with self.rec_lock:
+            if self.state.recording is not None:
+                rospy.loginfo("[ios_bridge] recording cancelled")
+                self.state.recording = None
+
+    def _clear_recording_buffer(self):
+        with self.rec_lock:
+            self.state.last_recording_buffer = None
+            self.state.pending_obstacles = []
+
+    def recording_status(self):
+        with self.rec_lock:
+            rec = self.state.recording
+            buf = self.state.last_recording_buffer
+            return {
+                "active": rec is not None,
+                "mode": rec["mode"] if rec else None,
+                "points": len(rec["points"]) if rec else 0,
+                "lastFix": rec["last_fix"] if rec else None,
+                "rtkLostCount": rec.get("rtk_lost_count", 0) if rec else 0,
+                "bufferedMode": buf["mode"] if buf else None,
+                "bufferedPoints": len(buf["points"]) if buf else 0,
+                "pendingObstacles": len(self.state.pending_obstacles),
+            }
+
+    # ── Validation helpers ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _polygon_area(pts):
+        """Signed area (m²). Positive if CCW."""
+        n = len(pts)
+        if n < 3:
+            return 0.0
+        s = 0.0
+        for i in range(n):
+            x1, y1 = pts[i]
+            x2, y2 = pts[(i + 1) % n]
+            s += (x1 * y2) - (x2 * y1)
+        return s / 2.0
+
+    @staticmethod
+    def _segments_intersect(a, b, c, d):
+        """True if open segments AB and CD properly intersect (no shared endpoint)."""
+        def cross(o, p, q):
+            return (p[0] - o[0]) * (q[1] - o[1]) - (p[1] - o[1]) * (q[0] - o[0])
+        d1 = cross(c, d, a)
+        d2 = cross(c, d, b)
+        d3 = cross(a, b, c)
+        d4 = cross(a, b, d)
+        if ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and \
+           ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0)):
+            return True
+        return False
+
+    def _is_self_intersecting(self, pts):
+        n = len(pts)
+        if n < 4:
+            return False
+        for i in range(n):
+            a = pts[i]
+            b = pts[(i + 1) % n]
+            for j in range(i + 1, n):
+                if abs(i - j) <= 1 or (i == 0 and j == n - 1):
+                    continue
+                c = pts[j]
+                d = pts[(j + 1) % n]
+                if self._segments_intersect(a, b, c, d):
+                    return True
+        return False
+
+    @staticmethod
+    def _point_in_polygon(p, poly):
+        x, y = p
+        inside = False
+        n = len(poly)
+        j = n - 1
+        for i in range(n):
+            xi, yi = poly[i]
+            xj, yj = poly[j]
+            if ((yi > y) != (yj > y)) and \
+               (x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-9) + xi):
+                inside = not inside
+            j = i
+        return inside
+
+    def _close_polygon(self, pts):
+        """Drop final point if it equals (within tolerance) the first."""
+        if len(pts) < 2:
+            return pts
+        x0, y0 = pts[0]
+        xn, yn = pts[-1]
+        if math.hypot(xn - x0, yn - y0) < self.rec_close_tolerance_m:
+            return pts[:-1]
+        return pts
+
+    def _validate_polygon(self, pts, label="polígono"):
+        pts = self._close_polygon(pts)
+        if len(pts) < 3:
+            raise ValueError("{}: necesita al menos 3 puntos.".format(label))
+        if abs(self._polygon_area(pts)) < self.rec_min_area_m2:
+            raise ValueError("{}: área demasiado pequeña (< {} m²).".format(label, self.rec_min_area_m2))
+        if self._is_self_intersecting(pts):
+            raise ValueError("{}: el polígono se cruza consigo mismo.".format(label))
+        # Normalise to CCW
+        if self._polygon_area(pts) < 0:
+            pts = list(reversed(pts))
+        return pts
+
+    # ── Build ROS messages ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def _to_ros_polygon(pts):
+        poly = Polygon()
+        poly.points = [Point32(x=float(x), y=float(y), z=0.0) for (x, y) in pts]
+        return poly
+
+    @staticmethod
+    def _yaw_to_quaternion(yaw_rad):
+        half = yaw_rad / 2.0
+        return Quaternion(x=0.0, y=0.0, z=math.sin(half), w=math.cos(half))
+
+    # ── Map payload ────────────────────────────────────────────────────────────
+
+    def map_payload(self):
+        snap = self.state.snapshot()
+        raw = snap.get("map_json", "") or ""
+        # Try to parse so the iOS side gets a structured object; if the backend
+        # JSON is malformed, return the raw string and let the client decide.
+        parsed = None
+        try:
+            parsed = json.loads(raw) if raw else None
+        except ValueError:
+            parsed = None
+        return {
+            "map": parsed,
+            "raw": raw if parsed is None else None,
+            "receivedAt": int(snap.get("map_received_at", 0.0) * 1000),
+            "hasMap": bool(parsed),
+        }
+
+    def pose_payload(self):
+        snap = self.state.snapshot()
+        pose = snap["pose"]
+        if pose is None:
+            return {"hasPose": False}
+        x = float(pose.pose.pose.position.x)
+        y = float(pose.pose.pose.position.y)
+        heading_deg = math.degrees(float(pose.vehicle_heading))
+        if heading_deg < 0:
+            heading_deg += 360.0
+        return {
+            "hasPose": True,
+            "x": x,
+            "y": y,
+            "headingDeg": heading_deg,
+            "fixType": self._gps_fix_type(pose),
+            "positionAccuracy": float(pose.position_accuracy),
+        }
+
+    # ── Save area / dock / clear ───────────────────────────────────────────────
+
+    def save_area(self, body, is_navigation):
+        """Save a mowing or navigation area.
+
+        Body schema:
+          {"name": str, "points"?: [[x,y]…], "obstacles"?: [[[x,y]…]…], "useBuffer"?: bool}
+        If `useBuffer` is true, points and obstacles are taken from the bridge's
+        last_recording_buffer and pending_obstacles instead of the request body.
+        """
+        snap = self.state.snapshot()
+        self._check_hardware(snap)
+
+        name = str(body.get("name", "")).strip() or ("Area " + time.strftime("%H:%M"))
+        use_buffer = bool(body.get("useBuffer", False))
+
+        if use_buffer:
+            with self.rec_lock:
+                buf = self.state.last_recording_buffer
+                if buf is None:
+                    raise RuntimeError("No hay grabación previa para guardar.")
+                if (is_navigation and buf["mode"] != "nav") or (not is_navigation and buf["mode"] != "mow"):
+                    raise RuntimeError("La grabación en buffer no coincide con el tipo solicitado.")
+                points = list(buf["points"])
+                obstacles = list(self.state.pending_obstacles) if not is_navigation else []
+        else:
+            points = [(float(p[0]), float(p[1])) for p in body.get("points", [])]
+            obstacles = []
+            if not is_navigation:
+                for raw_obs in body.get("obstacles", []):
+                    obstacles.append([(float(p[0]), float(p[1])) for p in raw_obs])
+
+        validated = self._validate_polygon(points, label="zona")
+
+        validated_obstacles = []
+        for i, ob in enumerate(obstacles, start=1):
+            ob_validated = self._validate_polygon(ob, label="exclusión {}".format(i))
+            # Each obstacle vertex must lie inside the main polygon
+            for p in ob_validated:
+                if not self._point_in_polygon(p, validated):
+                    raise ValueError(
+                        "La exclusión {} se sale del contorno principal.".format(i)
+                    )
+            validated_obstacles.append(ob_validated)
+
+        # Build ROS msg and call service
+        area_msg = MapArea()
+        area_msg.name = name
+        area_msg.area = self._to_ros_polygon(validated)
+        area_msg.obstacles = [self._to_ros_polygon(ob) for ob in validated_obstacles]
+
+        req = AddMowingAreaSrvRequest()
+        req.area = area_msg
+        req.isNavigationArea = bool(is_navigation)
+
+        try:
+            rospy.wait_for_service("/mower_map_service/add_mowing_area", timeout=2.0)
+            self.add_area_srv(req)
+        except rospy.ROSException:
+            raise RuntimeError("Servicio add_mowing_area no disponible.")
+        except rospy.ServiceException as exc:
+            raise RuntimeError("add_mowing_area falló: {}".format(exc))
+
+        if use_buffer:
+            self._clear_recording_buffer()
+
+        return {
+            "ok": True,
+            "name": name,
+            "points": len(validated),
+            "obstacles": len(validated_obstacles),
+            "isNavigationArea": bool(is_navigation),
+        }
+
+    def set_dock_here(self):
+        snap = self.state.snapshot()
+        self._check_hardware(snap)
+        pose = snap["pose"]
+        if pose is None:
+            raise RuntimeError("Sin pose disponible.")
+        if self.rec_require_rtk_fixed and self._gps_fix_type(pose) != "fixed":
+            raise RuntimeError("Sin fix RTK Fixed — no se puede fijar dock.")
+
+        x = float(pose.pose.pose.position.x)
+        y = float(pose.pose.pose.position.y)
+        yaw = float(pose.vehicle_heading)
+        return self._call_set_dock(x, y, yaw)
+
+    def set_dock_pose(self, body):
+        try:
+            x = float(body["x"])
+            y = float(body["y"])
+            yaw_deg = float(body.get("headingDeg", 0.0))
+        except (KeyError, TypeError, ValueError):
+            raise ValueError("Faltan x/y/headingDeg.")
+        return self._call_set_dock(x, y, math.radians(yaw_deg))
+
+    def _call_set_dock(self, x, y, yaw_rad):
+        req = SetDockingPointSrvRequest()
+        req.docking_pose = Pose()
+        req.docking_pose.position.x = x
+        req.docking_pose.position.y = y
+        req.docking_pose.position.z = 0.0
+        req.docking_pose.orientation = self._yaw_to_quaternion(yaw_rad)
+        try:
+            rospy.wait_for_service("/mower_map_service/set_docking_point", timeout=2.0)
+            self.set_dock_srv(req)
+        except rospy.ROSException:
+            raise RuntimeError("Servicio set_docking_point no disponible.")
+        except rospy.ServiceException as exc:
+            raise RuntimeError("set_docking_point falló: {}".format(exc))
+        return {"ok": True, "x": x, "y": y, "headingDeg": math.degrees(yaw_rad) % 360.0}
+
+    def clear_full_map(self):
+        try:
+            rospy.wait_for_service("/mower_map_service/clear_map", timeout=2.0)
+            self.clear_map_srv(ClearMapSrvRequest())
+        except rospy.ROSException:
+            raise RuntimeError("Servicio clear_map no disponible.")
+        except rospy.ServiceException as exc:
+            raise RuntimeError("clear_map falló: {}".format(exc))
+        self._clear_recording_buffer()
+        return {"ok": True}
 
     def _gps_fix_type(self, pose):
         """Classify RTK fix quality from AbsolutePose.position_accuracy."""

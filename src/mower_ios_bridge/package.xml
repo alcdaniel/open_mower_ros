@@ -10,6 +10,7 @@
   <buildtool_depend>catkin</buildtool_depend>
 
   <depend>geometry_msgs</depend>
+  <depend>mower_map</depend>
   <depend>mower_msgs</depend>
   <depend>rospy</depend>
   <depend>sensor_msgs</depend>
