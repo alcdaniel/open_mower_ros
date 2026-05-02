@@ -16,6 +16,7 @@
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
   <depend>xbot_msgs</depend>
+  <depend>xbot_rpc</depend>
 
   <export/>
 </package>

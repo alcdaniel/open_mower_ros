@@ -4,6 +4,7 @@ import math
 import socket
 import threading
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
@@ -23,6 +24,7 @@ from mower_msgs.srv import HighLevelControlSrv, HighLevelControlSrvRequest, Mowe
 from sensor_msgs.msg import Imu, Range
 from std_msgs.msg import Bool, String
 from xbot_msgs.msg import AbsolutePose
+from xbot_rpc.msg import RpcError, RpcRequest, RpcResponse
 
 
 def now_ms():
@@ -134,12 +136,16 @@ class IOSBridge:
         self.joy_vel_pub = rospy.Publisher("/joy_vel", Twist, queue_size=1)
         self.cfgget_pub = rospy.Publisher("/mega/cfgget", Bool, queue_size=1)
         self.cfgset_pub = rospy.Publisher("/mega/cfgset", String, queue_size=10)
+        self.rpc_request_pub = rospy.Publisher("/xbot/rpc/request", RpcRequest, queue_size=10)
 
         self.high_level_srv = rospy.ServiceProxy("/mower_service/high_level_control", HighLevelControlSrv)
         self.mower_control_srv = rospy.ServiceProxy("/ll/_service/mow_enabled", MowerControlSrv)
         self.add_area_srv = rospy.ServiceProxy("/mower_map_service/add_mowing_area", AddMowingAreaSrv)
         self.set_dock_srv = rospy.ServiceProxy("/mower_map_service/set_docking_point", SetDockingPointSrv)
         self.clear_map_srv = rospy.ServiceProxy("/mower_map_service/clear_map", ClearMapSrv)
+        self.service_lock = threading.RLock()
+        self.rpc_lock = threading.RLock()
+        self.rpc_pending = {}
 
         # Recording config
         self.rec_lock = threading.RLock()
@@ -148,6 +154,10 @@ class IOSBridge:
         self.rec_close_tolerance_m = float(rospy.get_param("~rec_close_tolerance_m", 0.30))
         self.rec_min_area_m2 = float(rospy.get_param("~rec_min_area_m2", 0.50))
         self.rec_require_rtk_fixed = ros_bool(rospy.get_param("~rec_require_rtk_fixed", True))
+        self.rec_fixed_accuracy_m = float(rospy.get_param("~rec_fixed_accuracy_m", 0.05))
+        self.rec_float_accuracy_m = float(rospy.get_param("~rec_float_accuracy_m", 0.50))
+        self.rec_fix_loss_pause_s = float(rospy.get_param("~rec_fix_loss_pause_s", 2.0))
+        self.map_update_timeout_s = float(rospy.get_param("~map_update_timeout_s", 3.0))
 
         rospy.Subscriber("/mower_logic/current_state", HighLevelStatus, self.state.update, "high_level")
         rospy.Subscriber("/ll/mower_status", Status, self.state.update, "low_level")
@@ -171,6 +181,8 @@ class IOSBridge:
 
         # Map (latched topic — last value arrives on subscribe)
         rospy.Subscriber("/mower_map_service/json_map", String, self._cb_json_map)
+        rospy.Subscriber("/xbot/rpc/response", RpcResponse, self._cb_rpc_response)
+        rospy.Subscriber("/xbot/rpc/error", RpcError, self._cb_rpc_error)
 
         # Recording auto-sampler (4 Hz default)
         sample_period = max(0.05, 1.0 / max(0.5, self.rec_sample_hz))
@@ -274,6 +286,12 @@ class IOSBridge:
                     })
                 except RuntimeError as exc:
                     self._send_json(request, {"ok": False, "error": str(exc)})
+            elif method == "POST" and path == "/api/recording/resume":
+                try:
+                    self._resume_recording()
+                    self._send_json(request, {"ok": True, "recording": self.recording_status()})
+                except RuntimeError as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
             elif method == "POST" and path == "/api/recording/cancel":
                 self._cancel_recording()
                 self._clear_recording_buffer()
@@ -315,6 +333,15 @@ class IOSBridge:
                         self._send_json(request, {"ok": True})
                     except RuntimeError as exc:
                         self._send_json(request, {"ok": False, "error": str(exc)})
+            elif method == "GET" and path == "/api/map/export":
+                self._send_json(request, self.map_payload())
+            elif method == "POST" and path in ("/api/map/replace", "/api/map/import"):
+                body = self._read_json(request)
+                try:
+                    res = self.replace_map(body)
+                    self._send_json(request, res)
+                except (RuntimeError, ValueError) as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
             else:
                 self._send_json(request, {"error": "not_found"}, status=404)
         except Exception as exc:
@@ -662,6 +689,25 @@ class IOSBridge:
             self.state.map_json = msg.data
             self.state.map_received_at = time.time()
 
+    def _cb_rpc_response(self, msg):
+        with self.rpc_lock:
+            pending = self.rpc_pending.get(msg.id)
+            if not pending:
+                return
+            pending["result"] = msg.result
+            pending["event"].set()
+
+    def _cb_rpc_error(self, msg):
+        with self.rpc_lock:
+            pending = self.rpc_pending.get(msg.id)
+            if not pending:
+                return
+            pending["error"] = {
+                "code": int(msg.code),
+                "message": msg.message,
+            }
+            pending["event"].set()
+
     # ── Recording state machine ────────────────────────────────────────────────
 
     def _sample_recording(self, _event=None):
@@ -670,14 +716,31 @@ class IOSBridge:
             rec = self.state.recording
             if not rec:
                 return
-            pose = self.state.snapshot()["pose"]
+            snap = self.state.snapshot()
+            pose = snap["pose"]
             if pose is None:
+                return
+
+            if not self._recording_allowed(snap):
+                rec["paused"] = True
+                rec["pause_reason"] = "robot_state"
+                rec["paused_at"] = rec.get("paused_at") or time.time()
                 return
 
             fix = self._gps_fix_type(pose)
             rec["last_fix"] = fix
             if self.rec_require_rtk_fixed and fix != "fixed":
+                bad_since = rec.get("bad_fix_since")
+                if bad_since is None:
+                    rec["bad_fix_since"] = time.time()
+                elif time.time() - bad_since >= self.rec_fix_loss_pause_s:
+                    rec["paused"] = True
+                    rec["pause_reason"] = "rtk_fix_lost"
+                    rec["paused_at"] = rec.get("paused_at") or time.time()
                 rec["rtk_lost_count"] = rec.get("rtk_lost_count", 0) + 1
+                return
+            rec["bad_fix_since"] = None
+            if rec.get("paused"):
                 return
 
             x = float(pose.pose.pose.position.x)
@@ -702,6 +765,12 @@ class IOSBridge:
                 raise RuntimeError(
                     "Para grabar una exclusión primero debes grabar y cerrar una zona de corte."
                 )
+            snap = self.state.snapshot()
+            self._check_hardware(snap)
+            if not self._recording_allowed(snap):
+                raise RuntimeError(
+                    "Sólo se puede grabar en IDLE o MANUAL y sin emergencia latched."
+                )
             self.state.recording = {
                 "mode": mode,
                 "points": [],
@@ -709,6 +778,10 @@ class IOSBridge:
                 "sampled_at": 0.0,
                 "rtk_lost_count": 0,
                 "last_fix": "none",
+                "paused": False,
+                "pause_reason": None,
+                "paused_at": None,
+                "bad_fix_since": None,
             }
             rospy.loginfo("[ios_bridge] recording started: %s", mode)
 
@@ -743,6 +816,27 @@ class IOSBridge:
                 rospy.loginfo("[ios_bridge] recording cancelled")
                 self.state.recording = None
 
+    def _resume_recording(self):
+        with self.rec_lock:
+            rec = self.state.recording
+            if rec is None:
+                raise RuntimeError("No hay grabación activa.")
+            if not rec.get("paused"):
+                return
+            snap = self.state.snapshot()
+            self._check_hardware(snap)
+            if not self._recording_allowed(snap):
+                raise RuntimeError(
+                    "El robot ya no está en IDLE/MANUAL o hay una emergencia activa."
+                )
+            pose = snap["pose"]
+            if self.rec_require_rtk_fixed and self._gps_fix_type(pose) != "fixed":
+                raise RuntimeError("Todavía no ha vuelto el RTK Fixed.")
+            rec["paused"] = False
+            rec["pause_reason"] = None
+            rec["paused_at"] = None
+            rec["bad_fix_since"] = None
+
     def _clear_recording_buffer(self):
         with self.rec_lock:
             self.state.last_recording_buffer = None
@@ -752,12 +846,20 @@ class IOSBridge:
         with self.rec_lock:
             rec = self.state.recording
             buf = self.state.last_recording_buffer
+            can_resume = False
+            if rec and rec.get("paused"):
+                snap = self.state.snapshot()
+                fix_ok = (not self.rec_require_rtk_fixed) or self._gps_fix_type(snap["pose"]) == "fixed"
+                can_resume = self._recording_allowed(snap) and fix_ok
             return {
                 "active": rec is not None,
                 "mode": rec["mode"] if rec else None,
                 "points": len(rec["points"]) if rec else 0,
                 "lastFix": rec["last_fix"] if rec else None,
                 "rtkLostCount": rec.get("rtk_lost_count", 0) if rec else 0,
+                "paused": bool(rec.get("paused")) if rec else False,
+                "pauseReason": rec.get("pause_reason") if rec else None,
+                "canResume": can_resume,
                 "bufferedMode": buf["mode"] if buf else None,
                 "bufferedPoints": len(buf["points"]) if buf else 0,
                 "pendingObstacles": len(self.state.pending_obstacles),
@@ -846,6 +948,43 @@ class IOSBridge:
             pts = list(reversed(pts))
         return pts
 
+    def _polygon_inside_polygon(self, inner, outer):
+        if not inner or not outer:
+            return False
+        # Every inner vertex must lie inside or on the boundary.
+        for p in inner:
+            if not self._point_in_polygon(p, outer) and not self._point_on_polygon_boundary(p, outer):
+                return False
+        # No obstacle edge may cross the main polygon boundary.
+        for i in range(len(inner)):
+            a = inner[i]
+            b = inner[(i + 1) % len(inner)]
+            for j in range(len(outer)):
+                c = outer[j]
+                d = outer[(j + 1) % len(outer)]
+                if self._segments_intersect(a, b, c, d):
+                    return False
+        return True
+
+    @staticmethod
+    def _point_on_segment(p, a, b, eps=1e-6):
+        cross = (p[1] - a[1]) * (b[0] - a[0]) - (p[0] - a[0]) * (b[1] - a[1])
+        if abs(cross) > eps:
+            return False
+        dot = (p[0] - a[0]) * (b[0] - a[0]) + (p[1] - a[1]) * (b[1] - a[1])
+        if dot < -eps:
+            return False
+        sq_len = (b[0] - a[0]) ** 2 + (b[1] - a[1]) ** 2
+        if dot - sq_len > eps:
+            return False
+        return True
+
+    def _point_on_polygon_boundary(self, p, poly):
+        for i in range(len(poly)):
+            if self._point_on_segment(p, poly[i], poly[(i + 1) % len(poly)]):
+                return True
+        return False
+
     # ── Build ROS messages ─────────────────────────────────────────────────────
 
     @staticmethod
@@ -876,6 +1015,45 @@ class IOSBridge:
             "raw": raw if parsed is None else None,
             "receivedAt": int(snap.get("map_received_at", 0.0) * 1000),
             "hasMap": bool(parsed),
+        }
+
+    def replace_map(self, body):
+        snap = self.state.snapshot()
+        self._check_hardware(snap)
+
+        if "map" in body:
+            map_doc = body["map"]
+        elif "raw" in body:
+            raw = body["raw"]
+            if not isinstance(raw, str) or not raw.strip():
+                raise ValueError("El campo raw debe ser un JSON no vacío.")
+            try:
+                map_doc = json.loads(raw)
+            except ValueError as exc:
+                raise ValueError("JSON inválido: {}".format(exc))
+        else:
+            raise ValueError("Falta map o raw en la petición.")
+
+        if not isinstance(map_doc, dict):
+            raise ValueError("El mapa debe ser un objeto JSON.")
+        if "areas" not in map_doc:
+            map_doc["areas"] = []
+        if "docking_stations" not in map_doc:
+            map_doc["docking_stations"] = []
+        if not isinstance(map_doc["areas"], list) or not isinstance(map_doc["docking_stations"], list):
+            raise ValueError("areas y docking_stations deben ser arrays.")
+
+        with self.service_lock:
+            self._await_map_update(
+                lambda: self._rpc_call("map.replace", [map_doc]),
+                "map.replace",
+            )
+
+        updated = self.map_payload()
+        return {
+            "ok": True,
+            "areas": len((updated.get("map") or {}).get("areas", [])),
+            "dockingStations": len((updated.get("map") or {}).get("docking_stations", [])),
         }
 
     def pose_payload(self):
@@ -934,12 +1112,10 @@ class IOSBridge:
         validated_obstacles = []
         for i, ob in enumerate(obstacles, start=1):
             ob_validated = self._validate_polygon(ob, label="exclusión {}".format(i))
-            # Each obstacle vertex must lie inside the main polygon
-            for p in ob_validated:
-                if not self._point_in_polygon(p, validated):
-                    raise ValueError(
-                        "La exclusión {} se sale del contorno principal.".format(i)
-                    )
+            if not self._polygon_inside_polygon(ob_validated, validated):
+                raise ValueError(
+                    "La exclusión {} debe quedar completamente dentro del contorno principal.".format(i)
+                )
             validated_obstacles.append(ob_validated)
 
         # Build ROS msg and call service
@@ -952,13 +1128,12 @@ class IOSBridge:
         req.area = area_msg
         req.isNavigationArea = bool(is_navigation)
 
-        try:
-            rospy.wait_for_service("/mower_map_service/add_mowing_area", timeout=2.0)
-            self.add_area_srv(req)
-        except rospy.ROSException:
-            raise RuntimeError("Servicio add_mowing_area no disponible.")
-        except rospy.ServiceException as exc:
-            raise RuntimeError("add_mowing_area falló: {}".format(exc))
+        with self.service_lock:
+            self._await_service_map_update(
+                "/mower_map_service/add_mowing_area",
+                lambda: self.add_area_srv(req),
+                "add_mowing_area",
+            )
 
         if use_buffer:
             self._clear_recording_buffer()
@@ -1001,23 +1176,21 @@ class IOSBridge:
         req.docking_pose.position.y = y
         req.docking_pose.position.z = 0.0
         req.docking_pose.orientation = self._yaw_to_quaternion(yaw_rad)
-        try:
-            rospy.wait_for_service("/mower_map_service/set_docking_point", timeout=2.0)
-            self.set_dock_srv(req)
-        except rospy.ROSException:
-            raise RuntimeError("Servicio set_docking_point no disponible.")
-        except rospy.ServiceException as exc:
-            raise RuntimeError("set_docking_point falló: {}".format(exc))
+        with self.service_lock:
+            self._await_service_map_update(
+                "/mower_map_service/set_docking_point",
+                lambda: self.set_dock_srv(req),
+                "set_docking_point",
+            )
         return {"ok": True, "x": x, "y": y, "headingDeg": math.degrees(yaw_rad) % 360.0}
 
     def clear_full_map(self):
-        try:
-            rospy.wait_for_service("/mower_map_service/clear_map", timeout=2.0)
-            self.clear_map_srv(ClearMapSrvRequest())
-        except rospy.ROSException:
-            raise RuntimeError("Servicio clear_map no disponible.")
-        except rospy.ServiceException as exc:
-            raise RuntimeError("clear_map falló: {}".format(exc))
+        with self.service_lock:
+            self._await_service_map_update(
+                "/mower_map_service/clear_map",
+                lambda: self.clear_map_srv(ClearMapSrvRequest()),
+                "clear_map",
+            )
         self._clear_recording_buffer()
         return {"ok": True}
 
@@ -1029,11 +1202,88 @@ class IOSBridge:
         if not has_recent:
             return "none"
         accuracy = float(pose.position_accuracy)
-        if accuracy <= 0.05:
+        if accuracy <= self.rec_fixed_accuracy_m:
             return "fixed"   # RTK Fixed
-        if accuracy <= 0.5:
+        if accuracy <= self.rec_float_accuracy_m:
             return "float"   # RTK Float
         return "single"      # GPS but no RTK
+
+    def _recording_allowed(self, snap):
+        emergency = snap["emergency"]
+        if emergency and emergency.latched_emergency:
+            return False
+        high = snap["high_level"]
+        if snap.get("manual_active"):
+            return True
+        if high is None:
+            return False
+        return (high.state & 0b11111) == HighLevelStatus.HIGH_LEVEL_STATE_IDLE
+
+    def _await_service_map_update(self, service_name, invoke, op_name):
+        prev_raw = self.state.map_json
+        prev_ts = self.state.map_received_at
+        try:
+            rospy.wait_for_service(service_name, timeout=2.0)
+            invoke()
+        except rospy.ROSException:
+            raise RuntimeError("Servicio {} no disponible.".format(service_name))
+        except rospy.ServiceException as exc:
+            raise RuntimeError("{} falló: {}".format(op_name, exc))
+        self._wait_for_map_change(prev_ts, prev_raw, op_name)
+
+    def _await_map_update(self, invoke, op_name):
+        prev_raw = self.state.map_json
+        prev_ts = self.state.map_received_at
+        invoke()
+        self._wait_for_map_change(prev_ts, prev_raw, op_name)
+
+    def _wait_for_map_change(self, prev_ts, prev_raw, op_name):
+        deadline = time.time() + self.map_update_timeout_s
+        while time.time() < deadline:
+            with self.state.lock:
+                if self.state.map_received_at > prev_ts and self.state.map_json != prev_raw:
+                    return
+            time.sleep(0.05)
+        raise RuntimeError(
+            "{} ejecutado pero json_map no se actualizó dentro de {} s.".format(
+                op_name, self.map_update_timeout_s
+            )
+        )
+
+    def _rpc_call(self, method, params=None, timeout=3.0):
+        req = RpcRequest()
+        req.id = uuid.uuid4().hex
+        req.method = method
+        req.params = json.dumps(params if params is not None else [])
+
+        pending = {
+            "event": threading.Event(),
+            "result": None,
+            "error": None,
+        }
+        with self.rpc_lock:
+            self.rpc_pending[req.id] = pending
+
+        try:
+            self.rpc_request_pub.publish(req)
+            if not pending["event"].wait(timeout):
+                raise RuntimeError("RPC {} sin respuesta dentro de {} s.".format(method, timeout))
+            if pending["error"] is not None:
+                raise RuntimeError(
+                    "RPC {} falló ({}): {}".format(
+                        method, pending["error"]["code"], pending["error"]["message"]
+                    )
+                )
+            result = pending["result"]
+            if not result:
+                return None
+            try:
+                return json.loads(result)
+            except ValueError:
+                return result
+        finally:
+            with self.rpc_lock:
+                self.rpc_pending.pop(req.id, None)
 
     def _check_hardware(self, snap, require_high_level=False):
         low = snap["low_level"]

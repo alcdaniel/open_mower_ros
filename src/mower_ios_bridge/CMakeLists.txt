@@ -3,20 +3,24 @@ project(mower_ios_bridge)
 
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
+  mower_map
   mower_msgs
   rospy
   sensor_msgs
   std_msgs
+  xbot_rpc
   xbot_msgs
 )
 
 catkin_package(
   CATKIN_DEPENDS
     geometry_msgs
+    mower_map
     mower_msgs
     rospy
     sensor_msgs
     std_msgs
+    xbot_rpc
     xbot_msgs
 )
 
