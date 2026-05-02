@@ -374,6 +374,11 @@ bool isGpsGood() {
          (last_pose.flags & xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE);
 }
 
+bool isLowLevelDisconnected(const mower_msgs::Emergency& emergency_state) {
+  return !emergency_state.active_emergency && !emergency_state.latched_emergency &&
+         emergency_state.reason.rfind("MEGA_", 0) == 0;
+}
+
 /// @brief Called every 0.5s, used to control BLADE motor via mower_enabled variable and stop any movement in case of
 /// /odom and /mower/status outages
 /// @param timer_event
@@ -397,6 +402,15 @@ void checkSafety(const ros::TimerEvent& timer_event) {
 
   // Initialize to true, if after all checks it is still true then mower should be enabled.
   mowerAllowed = true;
+
+  if (isLowLevelDisconnected(last_emergency)) {
+    mowerAllowed = false;
+    stopBlade();
+    stopMoving();
+    high_level_status.gps_quality_percent = 0;
+    ROS_WARN_STREAM_THROTTLE(5, "Low-level offline: " << last_emergency.reason);
+    return;
+  }
 
   // send to idle if emergency and we're not recording
   if (currentBehavior != nullptr) {

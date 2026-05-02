@@ -132,6 +132,7 @@ public:
         , mow_enabled_(false)
         , local_avoid_(false)
         , ser_open_(false)
+        , mega_connected_(false)
         , volts_(0.0)
         , amps_(0.0)
         , wheel_amps_(0.0)
@@ -154,6 +155,8 @@ public:
         wheel_dist_ = pnh.param<double>("wheel_distance_m", 0.325);
         max_pwm_    = pnh.param<int>("max_pwm", 255);
         hb_hz_      = pnh.param<double>("heartbeat_hz", 3.0);
+        offline_publish_hz_ = pnh.param<double>("offline_publish_hz", 1.0);
+        rx_timeout_s_       = pnh.param<double>("rx_timeout_s", 3.0);
 
         pub_emergency_ = nh.advertise<mower_msgs::Emergency>  ("ll/emergency",    1);
         pub_status_    = nh.advertise<mower_msgs::Status>     ("ll/mower_status", 1);
@@ -175,6 +178,9 @@ public:
         pub_compass_imu_ = nh.advertise<sensor_msgs::Imu>("mega/imu",     1);
         pub_cfg_        = nh.advertise<std_msgs::String>("mega/cfg",        10);
         pub_cfg_loaded_ = nh.advertise<std_msgs::Bool>  ("mega/cfg_loaded",  1);
+        pub_connected_  = nh.advertise<std_msgs::Bool>("mega/connected", 1, true);
+        pub_connection_status_ =
+            nh.advertise<std_msgs::String>("mega/connection_status", 1, true);
 
         sub_cfgget_ = nh.subscribe("mega/cfgget", 1, &MegaBridge::cbCfgGet, this);
         sub_cfgset_ = nh.subscribe("mega/cfgset", 1, &MegaBridge::cbCfgSet, this);
@@ -190,6 +196,12 @@ public:
         srv_em_  = nh.advertiseService("ll/_service/emergency",
                        &MegaBridge::srvEmergency, this);
 
+        updateConnectionState(false, "MEGA_DISCONNECTED: esperando telemetria del Mega en " + port_);
+        publishDisconnectedState();
+        status_timer_ = nh.createTimer(
+            ros::Duration(1.0 / std::max(0.2, offline_publish_hz_)),
+            &MegaBridge::cbStatusTimer,
+            this);
         reader_thread_ = std::thread(&MegaBridge::serialReader, this);
         hb_thread_     = std::thread(&MegaBridge::heartbeatLoop, this);
 
@@ -211,6 +223,8 @@ private:
     double      wheel_dist_;
     int         max_pwm_;
     double      hb_hz_;
+    double      offline_publish_hz_;
+    double      rx_timeout_s_;
 
     // ── Atomic flags (no mutex needed) ────────────────────────────────────────
     std::atomic<uint32_t> seq_;
@@ -218,6 +232,7 @@ private:
     std::atomic<bool>     mow_enabled_;
     std::atomic<bool>     local_avoid_;
     std::atomic<bool>     ser_open_;
+    std::atomic<bool>     mega_connected_;
 
     // ── Sensor state (guarded by state_mutex_) ────────────────────────────────
     std::mutex  state_mutex_;
@@ -233,14 +248,20 @@ private:
     serial::Serial ser_;
     std::mutex     write_mutex_;
 
+    std::mutex  connection_mutex_;
+    std::string connection_status_;
+    ros::Time   last_rx_time_;
+
     // ── ROS handles ───────────────────────────────────────────────────────────
     ros::Publisher     pub_emergency_, pub_status_, pub_power_;
     ros::Publisher     pub_twist_, pub_esc_l_, pub_esc_r_;
     ros::Publisher     pub_sonar_[3], pub_bumper_, pub_rain_, pub_tilt_, pub_wire_;
     ros::Publisher     pub_compass_imu_;
     ros::Publisher     pub_cfg_, pub_cfg_loaded_;
+    ros::Publisher     pub_connected_, pub_connection_status_;
     ros::Subscriber    sub_cmd_vel_, sub_hl_, sub_cfgget_, sub_cfgset_;
     ros::ServiceServer srv_mow_, srv_em_;
+    ros::Timer         status_timer_;
 
     std::thread reader_thread_, hb_thread_;
 
@@ -276,6 +297,132 @@ private:
         } catch (serial::SerialException& e) {
             ROS_WARN("[mega_bridge] write error: %s", e.what());
             ser_open_ = false;
+            updateConnectionState(false, "MEGA_DISCONNECTED: error de escritura serie (" + std::string(e.what()) + ")");
+            try { ser_.close(); } catch (...) {}
+        }
+    }
+
+    void updateConnectionState(bool connected, const std::string& status)
+    {
+        {
+            std::lock_guard<std::mutex> lk(connection_mutex_);
+            connection_status_ = status;
+            if (connected) last_rx_time_ = ros::Time::now();
+        }
+        mega_connected_ = connected;
+
+        std_msgs::Bool bm;
+        bm.data = connected;
+        pub_connected_.publish(bm);
+
+        std_msgs::String sm;
+        sm.data = status;
+        pub_connection_status_.publish(sm);
+    }
+
+    std::string connectionStatus()
+    {
+        std::lock_guard<std::mutex> lk(connection_mutex_);
+        return connection_status_;
+    }
+
+    void markRx()
+    {
+        {
+            std::lock_guard<std::mutex> lk(connection_mutex_);
+            last_rx_time_ = ros::Time::now();
+        }
+        if (!mega_connected_.load()) {
+            updateConnectionState(true, "MEGA_CONNECTED: telemetria recibida desde " + port_);
+        }
+    }
+
+    void publishDisconnectedState()
+    {
+        const auto now = ros::Time::now();
+        const auto reason = connectionStatus();
+
+        mower_msgs::Status status;
+        status.stamp = now;
+        status.mower_status = mower_msgs::Status::MOWER_STATUS_INITIALIZING;
+        status.raspberry_pi_power = true;
+        status.is_charging = false;
+        status.esc_power = false;
+        status.rain_detected = false;
+        status.sound_module_available = false;
+        status.sound_module_busy = false;
+        status.ui_board_available = false;
+        status.mow_enabled = false;
+        status.mower_esc_status = mower_msgs::ESCStatus::ESC_STATUS_DISCONNECTED;
+        status.mower_esc_temperature = 0.0f;
+        status.mower_esc_current = 0.0f;
+        status.mower_motor_temperature = 0.0f;
+        status.mower_motor_rpm = 0.0f;
+        pub_status_.publish(status);
+
+        mower_msgs::Power power;
+        power.stamp = now;
+        power.charge_voltage_adc = 0.0f;
+        power.charge_voltage_chg = 0.0f;
+        power.charge_current = 0.0f;
+        power.battery_voltage_adc = 0.0f;
+        power.battery_voltage_chg = 0.0f;
+        power.battery_voltage_bms = 0.0f;
+        power.battery_current = 0.0f;
+        power.battery_pct = 0.0f;
+        power.battery_soc = 0.0f;
+        power.battery_temp = 0.0f;
+        power.dcdc_input_current = 0.0f;
+        power.charger_input_current = 0.0f;
+        power.charger_status = "MEGA_DISCONNECTED";
+        power.charger_enabled = false;
+        power.bms_status = "MEGA_DISCONNECTED";
+        power.bms_extra_data = reason;
+        pub_power_.publish(power);
+
+        mower_msgs::Emergency emergency;
+        emergency.stamp = now;
+        emergency.active_emergency = false;
+        emergency.latched_emergency = false;
+        emergency.reason = reason;
+        pub_emergency_.publish(emergency);
+
+        mower_msgs::ESCStatus esc;
+        esc.status = mower_msgs::ESCStatus::ESC_STATUS_DISCONNECTED;
+        esc.current = 0.0f;
+        esc.tacho = 0;
+        esc.rpm = 0;
+        esc.temperature_motor = 0.0f;
+        esc.temperature_pcb = 0.0f;
+        pub_esc_l_.publish(esc);
+        pub_esc_r_.publish(esc);
+    }
+
+    void cbStatusTimer(const ros::TimerEvent&)
+    {
+        if (ser_open_.load()) {
+            ros::Time last_rx;
+            {
+                std::lock_guard<std::mutex> lk(connection_mutex_);
+                last_rx = last_rx_time_;
+            }
+            if (!last_rx.isZero() &&
+                (ros::Time::now() - last_rx) > ros::Duration(rx_timeout_s_)) {
+                ser_open_ = false;
+                try { ser_.close(); } catch (...) {}
+                updateConnectionState(
+                    false,
+                    "MEGA_DISCONNECTED: sin telemetria del Mega durante " +
+                    std::to_string(static_cast<int>(rx_timeout_s_)) + " s");
+            }
+        }
+
+        if (!mega_connected_.load()) {
+            publishDisconnectedState();
+        } else {
+            std_msgs::Bool bm;
+            bm.data = true;
+            pub_connected_.publish(bm);
         }
     }
 
@@ -296,9 +443,11 @@ private:
                     ser_.open();
                     ser_open_ = true;
                 }
+                updateConnectionState(false, "MEGA_WAITING: puerto serie abierto en " + port_ + ", esperando datos");
                 ROS_INFO("[mega_bridge] serial open: %s", port_.c_str());
                 return;
             } catch (serial::IOException& e) {
+                updateConnectionState(false, "MEGA_DISCONNECTED: no se puede abrir " + port_ + " (" + e.what() + ")");
                 ROS_WARN_THROTTLE(10, "[mega_bridge] cannot open %s: %s",
                                   port_.c_str(), e.what());
                 ros::Duration(2.0).sleep();
@@ -321,10 +470,12 @@ private:
             } catch (serial::SerialException& e) {
                 ROS_WARN("[mega_bridge] read error: %s", e.what());
                 ser_open_ = false;
+                updateConnectionState(false, "MEGA_DISCONNECTED: error de lectura serie (" + std::string(e.what()) + ")");
                 try { ser_.close(); } catch (...) {}
             } catch (serial::IOException& e) {
                 ROS_WARN("[mega_bridge] IO error: %s", e.what());
                 ser_open_ = false;
+                updateConnectionState(false, "MEGA_DISCONNECTED: error IO serie (" + std::string(e.what()) + ")");
                 try { ser_.close(); } catch (...) {}
             }
         }
@@ -337,6 +488,7 @@ private:
         std::string type;
         std::vector<std::string> fields;
         if (!parseMsg(line, type, fields)) return;
+        markRx();
 
         if (type == "HB") {
             // alive
@@ -588,6 +740,10 @@ private:
     bool srvMowEnabled(mower_msgs::MowerControlSrv::Request&  req,
                        mower_msgs::MowerControlSrv::Response&)
     {
+        if (!mega_connected_.load()) {
+            ROS_WARN_THROTTLE(2, "[mega_bridge] rejecting mow_enabled: Mega not connected");
+            return false;
+        }
         mow_enabled_ = req.mow_enabled;
         send("CMD", {"BLADE", req.mow_enabled ? "ON" : "OFF"});
         return true;
@@ -596,6 +752,10 @@ private:
     bool srvEmergency(mower_msgs::EmergencyStopSrv::Request&  req,
                       mower_msgs::EmergencyStopSrv::Response&)
     {
+        if (!mega_connected_.load() && !static_cast<bool>(req.emergency)) {
+            ROS_WARN_THROTTLE(2, "[mega_bridge] rejecting emergency reset: Mega not connected");
+            return false;
+        }
         setRosEmergency(static_cast<bool>(req.emergency), "ROS_REQUEST");
         return true;
     }

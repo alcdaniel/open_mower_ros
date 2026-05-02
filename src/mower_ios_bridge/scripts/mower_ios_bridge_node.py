@@ -66,6 +66,8 @@ class BridgeState:
         self.wire_detected = True
         self.mega_compass_deg = 0.0
         self.mega_settings = {}        # key → value string, populated by $CFG frames
+        self.mega_connected = False
+        self.mega_connection_status = "Mega no conectado"
 
         # Map / recording
         self.map_json = ""             # last value of /mower_map_service/json_map
@@ -102,6 +104,8 @@ class BridgeState:
                 "wire_detected": self.wire_detected,
                 "mega_compass_deg": self.mega_compass_deg,
                 "mega_settings": dict(self.mega_settings),
+                "mega_connected": self.mega_connected,
+                "mega_connection_status": self.mega_connection_status,
                 "map_json": self.map_json,
                 "map_received_at": self.map_received_at,
                 "recording": dict(self.recording) if self.recording else None,
@@ -178,6 +182,8 @@ class IOSBridge:
         rospy.Subscriber("/mega/imu",          Imu,    self._cb_compass_imu)
         rospy.Subscriber("/mega/cfg",          String, self._cb_cfg)
         rospy.Subscriber("/mega/cfg_loaded",   Bool,   self._cb_cfg_loaded)
+        rospy.Subscriber("/mega/connected",    Bool,   self._cb_mega_connected)
+        rospy.Subscriber("/mega/connection_status", String, self._cb_mega_connection_status)
 
         # Map (latched topic — last value arrives on subscribe)
         rospy.Subscriber("/mower_map_service/json_map", String, self._cb_json_map)
@@ -260,8 +266,11 @@ class IOSBridge:
                     self._send_json(request, {"ok": False, "error": str(exc)})
             elif method == "POST" and path == "/api/settings":
                 body = self._read_json(request)
-                self.handle_setting(body)
-                self._send_json(request, {"ok": True})
+                try:
+                    result = self.handle_setting(body)
+                    self._send_json(request, result)
+                except (RuntimeError, ValueError) as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
             elif method == "GET" and path == "/api/map":
                 self._send_json(request, self.map_payload())
             elif method == "GET" and path == "/api/pose":
@@ -413,9 +422,12 @@ class IOSBridge:
         wire_det     = snap.get("wire_detected", True)
         rain_mega    = snap.get("rain_mega", False)
         rain_detected = bool((low and low.rain_detected) or rain_mega)
+        mega_connected = bool(snap.get("mega_connected", False))
+        mega_status = snap.get("mega_connection_status", "Mega no conectado")
 
         return {
-            "connection": "connected",
+            "connection": "connected" if mega_connected else "disconnected",
+            "connectionMessage": mega_status,
             "state": state,
             "robotStatus": int(low.mower_status) if low else 0,
             "errorCode": 3 if emergency_active else (4 if tilt_active else 0),
@@ -491,13 +503,10 @@ class IOSBridge:
 
     def settings_payload(self):
         snap = self.state.snapshot()
-        updates = snap["last_setting_updates"]
         ms = snap.get("mega_settings", {})
 
         def mv(key, default=0):
-            """Return float value for a mega setting, preferring live updates."""
-            if "mega." + key in updates:
-                return float(updates["mega." + key])
+            """Return float value for a mega setting using the last value read back from Mega."""
             raw = ms.get(key)
             if raw is not None:
                 try:
@@ -609,10 +618,6 @@ class IOSBridge:
             self._setting("mega.alarm3Rep", "Alarma 3 repetir", "Alarma 3", "boolean", mv("alarm3Rep", 0), None,    None, None, None),
         ]
 
-        for item in settings:
-            sid = item["id"]
-            if sid in updates:
-                item["value"] = float(updates[sid])
         return settings
 
     def _setting(self, setting_id, title, group, kind, value, unit, minimum, maximum, step, option_labels=None):
@@ -654,6 +659,14 @@ class IOSBridge:
     def _cb_wire(self, msg):
         with self.state.lock:
             self.state.wire_detected = bool(msg.data)
+
+    def _cb_mega_connected(self, msg):
+        with self.state.lock:
+            self.state.mega_connected = bool(msg.data)
+
+    def _cb_mega_connection_status(self, msg):
+        with self.state.lock:
+            self.state.mega_connection_status = str(msg.data or "").strip() or "Mega no conectado"
 
     def _request_settings(self, _event=None):
         self.cfgget_pub.publish(Bool(True))
@@ -1290,8 +1303,15 @@ class IOSBridge:
         emergency = snap["emergency"]
         high = snap["high_level"]
         last_seen = snap.get("last_seen", {})
+        mega_connected = bool(snap.get("mega_connected", False))
+        mega_status = str(snap.get("mega_connection_status", "") or "").strip()
         now = time.time()
         low_age = now - last_seen.get("low_level", 0.0)
+        if not mega_connected:
+            raise RuntimeError(
+                mega_status or
+                "Mega no conectado — sin telemetría low-level disponible."
+            )
         if low is None or low_age > 3.0:
             raise RuntimeError(
                 "Mega no conectado — sin datos de /ll/mower_status. "
@@ -1343,11 +1363,18 @@ class IOSBridge:
     def handle_setting(self, body):
         setting_id = str(body.get("id", ""))
         value = float(body.get("value", 0))
-        self.state.set_setting(setting_id, value)
         if setting_id == "bridge.manualLinearSpeed":
             self.linear_speed = clamp(value, 0.05, 1.0)
+            self.state.set_setting(setting_id, self.linear_speed)
+            return {"ok": True, "id": setting_id, "value": self.linear_speed}
         elif setting_id == "bridge.manualAngularSpeed":
             self.angular_speed = clamp(value, 0.1, 2.0)
+            self.state.set_setting(setting_id, self.angular_speed)
+            return {"ok": True, "id": setting_id, "value": self.angular_speed}
+        elif setting_id == "bridge.udpBeacon":
+            self.beacon_enabled = bool(round(value))
+            self.state.set_setting(setting_id, 1 if self.beacon_enabled else 0)
+            return {"ok": True, "id": setting_id, "value": 1 if self.beacon_enabled else 0}
         elif setting_id.startswith("mega."):
             mega_key = setting_id[len("mega."):]
             # Format as integer if it's a whole number to keep payloads clean
@@ -1355,7 +1382,32 @@ class IOSBridge:
                 val_str = str(int(value))
             else:
                 val_str = "{:.4g}".format(value)
-            self.cfgset_pub.publish(String("{}={}".format(mega_key, val_str)))
+            expected = float(value)
+            with self.service_lock:
+                self.cfgset_pub.publish(String("{}={}".format(mega_key, val_str)))
+                confirmed = self._await_mega_setting_value(mega_key, expected)
+            return {"ok": True, "id": setting_id, "value": confirmed}
+        raise ValueError("Ajuste no soportado: {}".format(setting_id))
+
+    def _await_mega_setting_value(self, mega_key, expected, timeout=2.5):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with self.state.lock:
+                raw = self.state.mega_settings.get(mega_key)
+            if raw is not None:
+                try:
+                    actual = float(raw)
+                    if abs(actual - expected) <= 0.0001:
+                        self.state.set_setting("mega." + mega_key, actual)
+                        return actual
+                except (ValueError, TypeError):
+                    pass
+            time.sleep(0.05)
+        raise RuntimeError(
+            "La Raspberry no recibió confirmación del Mega para {} dentro de {} s.".format(
+                mega_key, timeout
+            )
+        )
 
     def _call_high_level(self, command):
         svc = "/mower_service/high_level_control"
