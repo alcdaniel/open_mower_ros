@@ -150,7 +150,7 @@ public:
         ros::NodeHandle nh;
         ros::NodeHandle pnh("~");
 
-        port_       = pnh.param<std::string>("port", "/dev/ttyAMA2");
+        port_       = pnh.param<std::string>("port", "/dev/ttyAMA0");
         baud_       = pnh.param<int>("baud", 57600);
         wheel_dist_ = pnh.param<double>("wheel_distance_m", 0.325);
         max_pwm_    = pnh.param<int>("max_pwm", 255);
