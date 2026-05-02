@@ -76,7 +76,7 @@ class BridgeState:
         self.pending_obstacles = []    # list[list[(x,y)]] buffered between mow stop and save
         self.last_recording_buffer = None  # snapshot of last closed mow session
 
-    def update(self, name, msg):
+    def update(self, msg, name):
         with self.lock:
             setattr(self, name, msg)
             self.last_seen[name] = time.time()
