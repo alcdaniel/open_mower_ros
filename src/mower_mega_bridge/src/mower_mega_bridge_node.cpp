@@ -23,6 +23,12 @@
  *   mega/tilt                       std_msgs/Bool
  *   mega/wire_detected              std_msgs/Bool
  *   mega/imu                        sensor_msgs/Imu     (yaw only)
+ *   mega/cfg                        std_msgs/String     (key=value, one per setting)
+ *   mega/cfg_loaded                 std_msgs/Bool       (true when full dump received)
+ *
+ * Topics subscribed (in addition to above):
+ *   mega/cfgget                     std_msgs/Bool       (publish true to request settings)
+ *   mega/cfgset                     std_msgs/String     (publish "key=value" to write one)
  *
  * Services:
  *   ll/_service/mow_enabled         mower_msgs/MowerControlSrv
@@ -63,6 +69,7 @@
 #include <sensor_msgs/Imu.h>
 #include <sensor_msgs/Range.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/String.h>
 
 // ── Protocol helpers ──────────────────────────────────────────────────────────
 
@@ -166,6 +173,11 @@ public:
         pub_tilt_      = nh.advertise<std_msgs::Bool>("mega/tilt",         1);
         pub_wire_      = nh.advertise<std_msgs::Bool>("mega/wire_detected",1);
         pub_compass_imu_ = nh.advertise<sensor_msgs::Imu>("mega/imu",     1);
+        pub_cfg_        = nh.advertise<std_msgs::String>("mega/cfg",        10);
+        pub_cfg_loaded_ = nh.advertise<std_msgs::Bool>  ("mega/cfg_loaded",  1);
+
+        sub_cfgget_ = nh.subscribe("mega/cfgget", 1, &MegaBridge::cbCfgGet, this);
+        sub_cfgset_ = nh.subscribe("mega/cfgset", 1, &MegaBridge::cbCfgSet, this);
 
         sub_cmd_vel_ = nh.subscribe("ll/cmd_vel", 1,
                            &MegaBridge::cbCmdVel, this,
@@ -226,7 +238,8 @@ private:
     ros::Publisher     pub_twist_, pub_esc_l_, pub_esc_r_;
     ros::Publisher     pub_sonar_[3], pub_bumper_, pub_rain_, pub_tilt_, pub_wire_;
     ros::Publisher     pub_compass_imu_;
-    ros::Subscriber    sub_cmd_vel_, sub_hl_;
+    ros::Publisher     pub_cfg_, pub_cfg_loaded_;
+    ros::Subscriber    sub_cmd_vel_, sub_hl_, sub_cfgget_, sub_cfgset_;
     ros::ServiceServer srv_mow_, srv_em_;
 
     std::thread reader_thread_, hb_thread_;
@@ -500,6 +513,20 @@ private:
             imu.linear_acceleration_covariance[0] = -1;  // not available
             pub_compass_imu_.publish(imu);
 
+        } else if (type == "CFG") {
+            // fields[0] = key, fields[1] = value
+            if (fields.size() >= 2) {
+                std_msgs::String sm;
+                sm.data = fields[0] + "=" + fields[1];
+                pub_cfg_.publish(sm);
+            }
+
+        } else if (type == "CFGEND") {
+            std_msgs::Bool bm;
+            bm.data = true;
+            pub_cfg_loaded_.publish(bm);
+            ROS_INFO("[mega_bridge] settings dump complete");
+
         } else if (type == "ERR") {
             std::string msg;
             for (const auto& f : fields) msg += f + ' ';
@@ -537,6 +564,24 @@ private:
     }
 
     void cbHighLevel(const mower_msgs::HighLevelStatus::ConstPtr&) {}
+
+    void cbCfgGet(const std_msgs::Bool::ConstPtr&)
+    {
+        send("CMD", {"CFGGET"});
+    }
+
+    void cbCfgSet(const std_msgs::String::ConstPtr& msg)
+    {
+        // Expect "key=value"
+        auto eq = msg->data.find('=');
+        if (eq == std::string::npos) {
+            ROS_WARN("[mega_bridge] cfgset bad format: %s", msg->data.c_str());
+            return;
+        }
+        std::string key = msg->data.substr(0, eq);
+        std::string val = msg->data.substr(eq + 1);
+        send("CMD", {"CFGSET", key, val});
+    }
 
     // ── ROS services ──────────────────────────────────────────────────────────
 

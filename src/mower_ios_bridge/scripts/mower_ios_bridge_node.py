@@ -54,6 +54,7 @@ class BridgeState:
         self.tilt = False
         self.wire_detected = True
         self.mega_compass_deg = 0.0
+        self.mega_settings = {}        # key → value string, populated by $CFG frames
 
     def update(self, name, msg):
         with self.lock:
@@ -82,6 +83,7 @@ class BridgeState:
                 "tilt": self.tilt,
                 "wire_detected": self.wire_detected,
                 "mega_compass_deg": self.mega_compass_deg,
+                "mega_settings": dict(self.mega_settings),
             }
 
     def set_manual_active(self, active, hold_seconds=2.0):
@@ -108,6 +110,8 @@ class IOSBridge:
 
         self.action_pub = rospy.Publisher("/xbot/action", String, queue_size=5)
         self.joy_vel_pub = rospy.Publisher("/joy_vel", Twist, queue_size=1)
+        self.cfgget_pub = rospy.Publisher("/mega/cfgget", Bool, queue_size=1)
+        self.cfgset_pub = rospy.Publisher("/mega/cfgset", String, queue_size=10)
 
         self.high_level_srv = rospy.ServiceProxy("/mower_service/high_level_control", HighLevelControlSrv)
         self.mower_control_srv = rospy.ServiceProxy("/ll/_service/mow_enabled", MowerControlSrv)
@@ -128,7 +132,12 @@ class IOSBridge:
         rospy.Subscriber("/mega/rain",         Bool, self._cb_rain_mega)
         rospy.Subscriber("/mega/tilt",         Bool, self._cb_tilt)
         rospy.Subscriber("/mega/wire_detected",Bool, self._cb_wire)
-        rospy.Subscriber("/mega/imu",          Imu,  self._cb_compass_imu)
+        rospy.Subscriber("/mega/imu",          Imu,    self._cb_compass_imu)
+        rospy.Subscriber("/mega/cfg",          String, self._cb_cfg)
+        rospy.Subscriber("/mega/cfg_loaded",   Bool,   self._cb_cfg_loaded)
+
+        # Request settings from Mega 3 s after startup (gives Mega time to boot)
+        rospy.Timer(rospy.Duration(3.0), self._request_settings, oneshot=True)
 
         self.httpd = None
 
@@ -351,19 +360,131 @@ class IOSBridge:
     def settings_payload(self):
         snap = self.state.snapshot()
         updates = snap["last_setting_updates"]
+        ms = snap.get("mega_settings", {})
+
+        def mv(key, default=0):
+            """Return float value for a mega setting, preferring live updates."""
+            if "mega." + key in updates:
+                return float(updates["mega." + key])
+            raw = ms.get(key)
+            if raw is not None:
+                try:
+                    return float(raw)
+                except (ValueError, TypeError):
+                    pass
+            return float(default)
+
         settings = [
-            self._setting("bridge.manualLinearSpeed", "Velocidad lineal manual", "App iOS", "number", self.linear_speed, "m/s", 0.05, 1.0, 0.05),
-            self._setting("bridge.manualAngularSpeed", "Velocidad giro manual", "App iOS", "number", self.angular_speed, "rad/s", 0.1, 2.0, 0.1),
-            self._setting("bridge.udpBeacon", "Descubrimiento UDP", "App iOS", "boolean", 1 if self.beacon_enabled else 0, None, None, None, None),
-            self._setting("blades.enabled", "Cuchillas permitidas", "Cuchilla", "boolean", 1, None, None, None, None),
+            # ── App iOS ────────────────────────────────────────────────────────
+            self._setting("bridge.manualLinearSpeed", "Velocidad lineal manual",  "App iOS", "number",  self.linear_speed,        "m/s",   0.05, 1.0,  0.05),
+            self._setting("bridge.manualAngularSpeed", "Velocidad giro manual",   "App iOS", "number",  self.angular_speed,       "rad/s", 0.1,  2.0,  0.1),
+            self._setting("bridge.udpBeacon",          "Descubrimiento UDP",      "App iOS", "boolean", 1 if self.beacon_enabled else 0, None, None, None, None),
+
+            # ── 1. Motores de rueda ────────────────────────────────────────────
+            self._setting("mega.pwmMaxLH",   "PWM máx izquierdo",      "Motores de rueda", "number",  mv("pwmMaxLH",  200), None, 0, 255, 1),
+            self._setting("mega.pwmMaxRH",   "PWM máx derecho",        "Motores de rueda", "number",  mv("pwmMaxRH",  200), None, 0, 255, 1),
+            self._setting("mega.pwmSlowLH",  "PWM lento izquierdo",    "Motores de rueda", "number",  mv("pwmSlowLH",  80), None, 0, 255, 1),
+            self._setting("mega.pwmSlowRH",  "PWM lento derecho",      "Motores de rueda", "number",  mv("pwmSlowRH",  80), None, 0, 255, 1),
+            self._setting("mega.wheelsOn",   "Ruedas activadas",       "Motores de rueda", "boolean", mv("wheelsOn",    1), None, None, None, None),
+
+            # ── 2. Temporización ──────────────────────────────────────────────
+            self._setting("mega.turnDelayMin",  "Tiempo giro mín (×100 ms)", "Temporización", "number", mv("turnDelayMin",  10), "×100ms", 1,  50, 1),
+            self._setting("mega.turnDelayMax",  "Tiempo giro máx (×100 ms)", "Temporización", "number", mv("turnDelayMax",  20), "×100ms", 1, 100, 1),
+            self._setting("mega.reverseDelay",  "Tiempo marcha atrás",       "Temporización", "number", mv("reverseDelay",   5), "×100ms", 1,  50, 1),
+            self._setting("mega.straightCycles","Ciclos en línea recta",      "Temporización", "number", mv("straightCycles",20), "ciclos", 1, 200, 1),
+            self._setting("mega.turn90LH",      "Giro 90° izq (×10 ms)",     "Temporización", "number", mv("turn90LH",     90), "×10ms",  1, 200, 1),
+            self._setting("mega.turn90RH",      "Giro 90° der (×10 ms)",     "Temporización", "number", mv("turn90RH",     90), "×10ms",  1, 200, 1),
+            self._setting("mega.lineLenCycles", "Ciclos longitud línea",      "Temporización", "number", mv("lineLenCycles", 0), "ciclos", 0, 200, 1),
+
+            # ── 3. Cuchillas ──────────────────────────────────────────────────
+            self._setting("mega.pwmBlade", "PWM cuchilla",        "Cuchillas", "number",  mv("pwmBlade", 255), None, 0,   255, 1),
+            self._setting("mega.bladeOn",  "Cuchillas activadas", "Cuchillas", "boolean", mv("bladeOn",    1), None, None, None, None),
+
+            # ── 4. Sonares ────────────────────────────────────────────────────
+            self._setting("mega.sonar1On",    "Sonar 1 activo",          "Sonares", "boolean", mv("sonar1On",    1), None, None, None, None),
+            self._setting("mega.sonar2On",    "Sonar 2 activo",          "Sonares", "boolean", mv("sonar2On",    1), None, None, None, None),
+            self._setting("mega.sonar3On",    "Sonar 3 activo",          "Sonares", "boolean", mv("sonar3On",    1), None, None, None, None),
+            self._setting("mega.sonarMaxCm",  "Distancia detección (cm)","Sonares", "number",  mv("sonarMaxCm", 30), "cm",    5, 200, 1),
+            self._setting("mega.sonarMaxHit", "Sensibilidad sonar",      "Sonares", "number",  mv("sonarMaxHit", 3), "hits",  1,  20, 1),
+
+            # ── 5. Cable perimetral ───────────────────────────────────────────
+            self._setting("mega.wireOn",      "Cable perimetral activo", "Cable perimetral", "boolean", mv("wireOn",      1), None,     None, None,  None),
+            self._setting("mega.pidP",        "PID P",                   "Cable perimetral", "number",  mv("pidP",     1.50), None,     0.01, 10.0,  0.01),
+            self._setting("mega.wireZ1Cyc",   "Ciclos zona 1 (×100)",    "Cable perimetral", "number",  mv("wireZ1Cyc",   5), "×100",   1,   50,    1),
+            self._setting("mega.wireZ2Cyc",   "Ciclos zona 2 (×100)",    "Cable perimetral", "number",  mv("wireZ2Cyc",   5), "×100",   1,   50,    1),
+            self._setting("mega.wireFwdCyc",  "Ciclos avance cable",     "Cable perimetral", "number",  mv("wireFwdCyc", 20), "×10",    1,  200,    1),
+            self._setting("mega.wireBakCyc",  "Ciclos retroceso cable",  "Cable perimetral", "number",  mv("wireBakCyc", 10), "×10",    1,  200,    1),
+            self._setting("mega.wireMaxTrR",  "Giros der antes reinicio","Cable perimetral", "number",  mv("wireMaxTrR", 20), "×10",    1,  200,    1),
+            self._setting("mega.wireMaxTrL",  "Giros izq antes reinicio","Cable perimetral", "number",  mv("wireMaxTrL", 20), "×10",    1,  200,    1),
+            self._setting("mega.cwToCharge",  "CW hacia carga",          "Cable perimetral", "boolean", mv("cwToCharge",  1), None,     None, None,  None),
+            self._setting("mega.ccwToCharge", "CCW hacia carga",         "Cable perimetral", "boolean", mv("ccwToCharge", 0), None,     None, None,  None),
+            self._setting("mega.cwToStart",   "CW hacia inicio",         "Cable perimetral", "boolean", mv("cwToStart",   0), None,     None, None,  None),
+            self._setting("mega.ccwToStart",  "CCW hacia inicio",        "Cable perimetral", "boolean", mv("ccwToStart",  1), None,     None, None,  None),
+
+            # ── 6. Compás ─────────────────────────────────────────────────────
+            self._setting("mega.compassOn",    "Compás activo",          "Compás", "boolean", mv("compassOn",    0), None,    None, None,  None),
+            self._setting("mega.compassMode",  "Modo compás",            "Compás", "option",  mv("compassMode",  1), None,    1,    3,     1, ["DFRobot QMC5883", "QMC5883 Manual", "QMC5883L"]),
+            self._setting("mega.compassHHold", "Mantener rumbo",         "Compás", "boolean", mv("compassHHold", 0), None,    None, None,  None),
+            self._setting("mega.compassPower", "Potencia PID compás",    "Compás", "number",  mv("compassPower", 2.0), None,  0.1,  10.0,  0.1),
+            self._setting("mega.compassHome",  "Rumbo base (°)",         "Compás", "number",  mv("compassHome",  0), "°",    0,    359,   1),
+
+            # ── 7. Giroscopio ─────────────────────────────────────────────────
+            self._setting("mega.gyroOn",    "Giroscopio activo",     "Giroscopio", "boolean", mv("gyroOn",    0), None, None, None,  None),
+            self._setting("mega.gyroPower", "Potencia PID giroscopio","Giroscopio","number",  mv("gyroPower", 2.0), None, 0.1, 10.0,  0.1),
+
+            # ── 8. Batería ────────────────────────────────────────────────────
+            self._setting("mega.battMin",   "Voltaje mínimo batería",   "Batería", "number",  mv("battMin",  21.0), "V",     10.0, 30.0, 0.1),
+            self._setting("mega.battSens",  "Sensibilidad baja batería","Batería", "number",  mv("battSens",    5), "count",    1,   30,   1),
+
+            # ── 9. Protección ruedas ──────────────────────────────────────────
+            self._setting("mega.wheelAmpOn",  "Sensor amperios rueda activo","Protección ruedas","boolean", mv("wheelAmpOn",  1), None, None, None, None),
+            self._setting("mega.wheelAmpMax", "Amperios máx rueda",          "Protección ruedas","number",  mv("wheelAmpMax", 1.5), "A",  0.1, 10.0, 0.1),
+
+            # ── 10. Bumper ────────────────────────────────────────────────────
+            self._setting("mega.bumperOn", "Bumper activo", "Bumper", "boolean", mv("bumperOn", 1), None, None, None, None),
+
+            # ── 11. Patrón de corte ───────────────────────────────────────────
+            self._setting("mega.patternMow", "Tipo de patrón", "Patrón de corte", "option", mv("patternMow", 0), None, 0, 2, 1, ["Aleatorio", "Paralelo", "Espiral"]),
+
+            # ── 12. Inclinación ───────────────────────────────────────────────
+            self._setting("mega.tiltOn", "Sensor ángulo activo",    "Inclinación", "boolean", mv("tiltOn", 0), None, None, None, None),
+            self._setting("mega.tipOn",  "Sensor vuelco activo",    "Inclinación", "boolean", mv("tipOn",  0), None, None, None, None),
+
+            # ── 13. Lluvia ────────────────────────────────────────────────────
+            self._setting("mega.rainOn",   "Sensor lluvia instalado",  "Lluvia", "boolean", mv("rainOn",    0), None,    None, None, None),
+            self._setting("mega.rainSens", "Sensibilidad lluvia",      "Lluvia", "number",  mv("rainSens",  5), "count",    1,   30,   1),
+
+            # ── 14. Base de carga ─────────────────────────────────────────────
+            self._setting("mega.chargeStOn", "Usar base de carga", "Base de carga", "boolean", mv("chargeStOn", 1), None, None, None, None),
+
+            # ── 16. Alarmas ───────────────────────────────────────────────────
+            self._setting("mega.alarm1On",  "Alarma 1 activa",  "Alarma 1", "boolean", mv("alarm1On",  0), None,    None, None, None),
+            self._setting("mega.alarm1H",   "Alarma 1 hora",    "Alarma 1", "number",  mv("alarm1H",   6), "h",     0,   23,   1),
+            self._setting("mega.alarm1M",   "Alarma 1 minuto",  "Alarma 1", "number",  mv("alarm1M",   0), "min",   0,   59,   1),
+            self._setting("mega.alarm1Act", "Alarma 1 acción",  "Alarma 1", "option",  mv("alarm1Act", 4), None,    1,    5,   1, ["Zona 1", "Zona 2", "Línea", "Inicio rápido", "Personalizada"]),
+            self._setting("mega.alarm1Rep", "Alarma 1 repetir", "Alarma 1", "boolean", mv("alarm1Rep", 0), None,    None, None, None),
+
+            self._setting("mega.alarm2On",  "Alarma 2 activa",  "Alarma 2", "boolean", mv("alarm2On",  0), None,    None, None, None),
+            self._setting("mega.alarm2H",   "Alarma 2 hora",    "Alarma 2", "number",  mv("alarm2H",  12), "h",     0,   23,   1),
+            self._setting("mega.alarm2M",   "Alarma 2 minuto",  "Alarma 2", "number",  mv("alarm2M",   0), "min",   0,   59,   1),
+            self._setting("mega.alarm2Act", "Alarma 2 acción",  "Alarma 2", "option",  mv("alarm2Act", 4), None,    1,    5,   1, ["Zona 1", "Zona 2", "Línea", "Inicio rápido", "Personalizada"]),
+            self._setting("mega.alarm2Rep", "Alarma 2 repetir", "Alarma 2", "boolean", mv("alarm2Rep", 0), None,    None, None, None),
+
+            self._setting("mega.alarm3On",  "Alarma 3 activa",  "Alarma 3", "boolean", mv("alarm3On",  0), None,    None, None, None),
+            self._setting("mega.alarm3H",   "Alarma 3 hora",    "Alarma 3", "number",  mv("alarm3H",  18), "h",     0,   23,   1),
+            self._setting("mega.alarm3M",   "Alarma 3 minuto",  "Alarma 3", "number",  mv("alarm3M",   0), "min",   0,   59,   1),
+            self._setting("mega.alarm3Act", "Alarma 3 acción",  "Alarma 3", "option",  mv("alarm3Act", 4), None,    1,    5,   1, ["Zona 1", "Zona 2", "Línea", "Inicio rápido", "Personalizada"]),
+            self._setting("mega.alarm3Rep", "Alarma 3 repetir", "Alarma 3", "boolean", mv("alarm3Rep", 0), None,    None, None, None),
         ]
+
         for item in settings:
-            if item["id"] in updates:
-                item["value"] = updates[item["id"]]
+            sid = item["id"]
+            if sid in updates:
+                item["value"] = float(updates[sid])
         return settings
 
-    def _setting(self, setting_id, title, group, kind, value, unit, minimum, maximum, step):
-        return {
+    def _setting(self, setting_id, title, group, kind, value, unit, minimum, maximum, step, option_labels=None):
+        obj = {
             "id": setting_id,
             "title": title,
             "group": group,
@@ -375,6 +496,9 @@ class IOSBridge:
             "step": step,
             "isEnabled": None,
         }
+        if option_labels is not None:
+            obj["optionLabels"] = option_labels
+        return obj
 
     # ── Extended sensor callbacks ──────────────────────────────────────────────
 
@@ -398,6 +522,23 @@ class IOSBridge:
     def _cb_wire(self, msg):
         with self.state.lock:
             self.state.wire_detected = bool(msg.data)
+
+    def _request_settings(self, _event=None):
+        self.cfgget_pub.publish(Bool(True))
+        rospy.loginfo("[ios_bridge] requested settings from Mega")
+
+    def _cb_cfg(self, msg):
+        """Handle one $CFG key=value frame from Mega."""
+        if '=' not in msg.data:
+            return
+        key, _, val = msg.data.partition('=')
+        with self.state.lock:
+            self.state.mega_settings[key.strip()] = val.strip()
+
+    def _cb_cfg_loaded(self, _msg):
+        """Handle $CFGEND — full settings dump received."""
+        rospy.loginfo("[ios_bridge] Mega settings loaded (%d keys)",
+                      len(self.state.mega_settings))
 
     def _cb_compass_imu(self, msg):
         q = msg.orientation
@@ -486,6 +627,14 @@ class IOSBridge:
             self.linear_speed = clamp(value, 0.05, 1.0)
         elif setting_id == "bridge.manualAngularSpeed":
             self.angular_speed = clamp(value, 0.1, 2.0)
+        elif setting_id.startswith("mega."):
+            mega_key = setting_id[len("mega."):]
+            # Format as integer if it's a whole number to keep payloads clean
+            if value == int(value):
+                val_str = str(int(value))
+            else:
+                val_str = "{:.4g}".format(value)
+            self.cfgset_pub.publish(String("{}={}".format(mega_key, val_str)))
 
     def _call_high_level(self, command):
         svc = "/mower_service/high_level_control"
