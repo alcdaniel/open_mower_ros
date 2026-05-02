@@ -8,12 +8,13 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   geometry_msgs
   sensor_msgs
+  std_msgs
   mower_msgs
   serial
 )
 
 catkin_package(
-  CATKIN_DEPENDS roscpp geometry_msgs sensor_msgs mower_msgs serial
+  CATKIN_DEPENDS roscpp geometry_msgs sensor_msgs std_msgs mower_msgs serial
 )
 
 include_directories(${catkin_INCLUDE_DIRS})

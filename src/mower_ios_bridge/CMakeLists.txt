@@ -5,6 +5,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   mower_msgs
   rospy
+  sensor_msgs
   std_msgs
   xbot_msgs
 )
@@ -14,6 +15,7 @@ catkin_package(
     geometry_msgs
     mower_msgs
     rospy
+    sensor_msgs
     std_msgs
     xbot_msgs
 )

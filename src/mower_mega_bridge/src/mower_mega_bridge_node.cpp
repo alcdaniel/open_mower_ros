@@ -15,6 +15,14 @@
  *   ll/diff_drive/measured_twist    geometry_msgs/TwistStamped
  *   ll/diff_drive/left_esc_status   mower_msgs/ESCStatus
  *   ll/diff_drive/right_esc_status  mower_msgs/ESCStatus
+ *   mega/sonar/front                sensor_msgs/Range   (cm → metres, 999 → ∞)
+ *   mega/sonar/left                 sensor_msgs/Range
+ *   mega/sonar/right                sensor_msgs/Range
+ *   mega/bumper                     std_msgs/Bool
+ *   mega/rain                       std_msgs/Bool
+ *   mega/tilt                       std_msgs/Bool
+ *   mega/wire_detected              std_msgs/Bool
+ *   mega/imu                        sensor_msgs/Imu     (yaw only)
  *
  * Services:
  *   ll/_service/mow_enabled         mower_msgs/MowerControlSrv
@@ -29,9 +37,11 @@
  */
 
 #include <atomic>
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iomanip>
+#include <limits>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -50,6 +60,9 @@
 #include <mower_msgs/EmergencyStopSrv.h>
 #include <mower_msgs/Power.h>
 #include <mower_msgs/Status.h>
+#include <sensor_msgs/Imu.h>
+#include <sensor_msgs/Range.h>
+#include <std_msgs/Bool.h>
 
 // ── Protocol helpers ──────────────────────────────────────────────────────────
 
@@ -119,6 +132,12 @@ public:
         , pwm_l_(0)
         , pwm_r_(0)
         , mega_state_("IDLE")
+        , compass_deg_(0.0)
+        , bumper_(false)
+        , rain_(false)
+        , tilt_(false)
+        , wire_(false)
+        , sonar_{999, 999, 999}
     {
         ros::NodeHandle nh;
         ros::NodeHandle pnh("~");
@@ -138,6 +157,15 @@ public:
                              "ll/diff_drive/left_esc_status", 1);
         pub_esc_r_     = nh.advertise<mower_msgs::ESCStatus>(
                              "ll/diff_drive/right_esc_status", 1);
+
+        pub_sonar_[0]  = nh.advertise<sensor_msgs::Range>("mega/sonar/front", 1);
+        pub_sonar_[1]  = nh.advertise<sensor_msgs::Range>("mega/sonar/left",  1);
+        pub_sonar_[2]  = nh.advertise<sensor_msgs::Range>("mega/sonar/right", 1);
+        pub_bumper_    = nh.advertise<std_msgs::Bool>("mega/bumper",       1);
+        pub_rain_      = nh.advertise<std_msgs::Bool>("mega/rain",         1);
+        pub_tilt_      = nh.advertise<std_msgs::Bool>("mega/tilt",         1);
+        pub_wire_      = nh.advertise<std_msgs::Bool>("mega/wire_detected",1);
+        pub_compass_imu_ = nh.advertise<sensor_msgs::Imu>("mega/imu",     1);
 
         sub_cmd_vel_ = nh.subscribe("ll/cmd_vel", 1,
                            &MegaBridge::cbCmdVel, this,
@@ -185,6 +213,9 @@ private:
     int         charging_;
     int         pwm_l_, pwm_r_;
     std::string mega_state_;
+    double      compass_deg_;
+    bool        bumper_, rain_, tilt_, wire_;
+    int         sonar_[3];
 
     // ── Serial (write path guarded by write_mutex_) ───────────────────────────
     serial::Serial ser_;
@@ -193,6 +224,8 @@ private:
     // ── ROS handles ───────────────────────────────────────────────────────────
     ros::Publisher     pub_emergency_, pub_status_, pub_power_;
     ros::Publisher     pub_twist_, pub_esc_l_, pub_esc_r_;
+    ros::Publisher     pub_sonar_[3], pub_bumper_, pub_rain_, pub_tilt_, pub_wire_;
+    ros::Publisher     pub_compass_imu_;
     ros::Subscriber    sub_cmd_vel_, sub_hl_;
     ros::ServiceServer srv_mow_, srv_em_;
 
@@ -310,17 +343,21 @@ private:
             amps_ = fields.empty() ? 0.0 : std::stod(fields[0]);
 
         } else if (type == "WHEEL_AMPS") {
-            mower_msgs::ESCStatus esc;
+            mower_msgs::ESCStatus escL, escR;
             {
                 std::lock_guard<std::mutex> lk(state_mutex_);
                 wheel_amps_ = fields.empty() ? 0.0 : std::stod(fields[0]);
-                esc.status  = (mega_state_ == "RUNNING")
-                              ? mower_msgs::ESCStatus::ESC_STATUS_RUNNING
-                              : mower_msgs::ESCStatus::ESC_STATUS_OK;
-                esc.current = static_cast<float>(wheel_amps_ / 2.0);
+                auto s = (mega_state_ == "RUNNING")
+                         ? mower_msgs::ESCStatus::ESC_STATUS_RUNNING
+                         : mower_msgs::ESCStatus::ESC_STATUS_OK;
+                escL.status  = escR.status  = s;
+                escL.current = escR.current = static_cast<float>(wheel_amps_ / 2.0);
+                // Derive RPM from last known PWM so the iOS bridge can compute motor %
+                escL.rpm = pwm_l_ * 20;
+                escR.rpm = pwm_r_ * 20;
             }
-            pub_esc_l_.publish(esc);
-            pub_esc_r_.publish(esc);
+            pub_esc_l_.publish(escL);
+            pub_esc_r_.publish(escR);
 
         } else if (type == "CHARGE") {
             mower_msgs::Power pm;
@@ -358,6 +395,8 @@ private:
                     (state == "IDLE" || state == "PARKED" || state == "DOCKED")
                     ? mower_msgs::Status::MOWER_STATUS_INITIALIZING
                     : mower_msgs::Status::MOWER_STATUS_OK;
+                sm.mow_enabled = mow_enabled_.load();
+                sm.is_charging = (charging_ > 0);
             }
             if      (state == "LOCAL_AVOIDANCE") local_avoid_ = true;
             else if (state == "READY" || state == "IDLE" ||
@@ -385,7 +424,81 @@ private:
                 setRosEmergency(true, reason);
             } else if (kind == "DEADMAN") {
                 ROS_WARN("[mega_bridge] Mega triggered deadman stop");
+                setRosEmergency(true, "DEADMAN");
             }
+
+        } else if (type == "SONAR") {
+            if (fields.size() >= 3) {
+                auto now = ros::Time::now();
+                const char* frames[3] = {"sonar_front", "sonar_left", "sonar_right"};
+                {
+                    std::lock_guard<std::mutex> lk(state_mutex_);
+                    for (int i = 0; i < 3; ++i)
+                        sonar_[i] = std::stoi(fields[i]);
+                }
+                for (int i = 0; i < 3; ++i) {
+                    sensor_msgs::Range r;
+                    r.header.stamp    = now;
+                    r.header.frame_id = frames[i];
+                    r.radiation_type  = sensor_msgs::Range::ULTRASOUND;
+                    r.field_of_view   = 0.26f;   // ~15°
+                    r.min_range       = 0.02f;
+                    r.max_range       = 3.00f;
+                    r.range = (sonar_[i] >= 999)
+                              ? std::numeric_limits<float>::infinity()
+                              : sonar_[i] / 100.0f;
+                    pub_sonar_[i].publish(r);
+                }
+            }
+
+        } else if (type == "BUMPER") {
+            bool b = !fields.empty() && fields[0] == "1";
+            { std::lock_guard<std::mutex> lk(state_mutex_); bumper_ = b; }
+            std_msgs::Bool bm; bm.data = b;
+            pub_bumper_.publish(bm);
+
+        } else if (type == "RAIN") {
+            bool r = !fields.empty() && fields[0] != "0";
+            { std::lock_guard<std::mutex> lk(state_mutex_); rain_ = r; }
+            std_msgs::Bool rm; rm.data = r;
+            pub_rain_.publish(rm);
+
+        } else if (type == "TILT") {
+            bool t = !fields.empty() && fields[0] != "0";
+            { std::lock_guard<std::mutex> lk(state_mutex_); tilt_ = t; }
+            std_msgs::Bool tm; tm.data = t;
+            pub_tilt_.publish(tm);
+            if (t) {
+                ROS_WARN("[mega_bridge] Tilt sensor triggered — triggering emergency");
+                setRosEmergency(true, "TILT_SENSOR");
+            }
+
+        } else if (type == "WIRE") {
+            bool w = !fields.empty() && fields[0] != "0";
+            { std::lock_guard<std::mutex> lk(state_mutex_); wire_ = w; }
+            std_msgs::Bool wm; wm.data = w;
+            pub_wire_.publish(wm);
+
+        } else if (type == "COMPASS") {
+            double deg = fields.empty() ? 0.0 : std::stod(fields[0]);
+            { std::lock_guard<std::mutex> lk(state_mutex_); compass_deg_ = deg; }
+            // Publish as IMU (yaw only) — robot_localization / EKF can fuse this.
+            sensor_msgs::Imu imu;
+            imu.header.stamp    = ros::Time::now();
+            imu.header.frame_id = "base_link";
+            constexpr double kPi = 3.14159265358979323846;
+            double rad = deg * kPi / 180.0;
+            imu.orientation.x = 0.0;
+            imu.orientation.y = 0.0;
+            imu.orientation.z = std::sin(rad / 2.0);
+            imu.orientation.w = std::cos(rad / 2.0);
+            // Roll/pitch unknown; yaw variance ~0.05 rad² (≈±12°)
+            imu.orientation_covariance[0] = 1e6;
+            imu.orientation_covariance[4] = 1e6;
+            imu.orientation_covariance[8] = 0.05;
+            imu.angular_velocity_covariance[0]    = -1;  // not available
+            imu.linear_acceleration_covariance[0] = -1;  // not available
+            pub_compass_imu_.publish(imu);
 
         } else if (type == "ERR") {
             std::string msg;

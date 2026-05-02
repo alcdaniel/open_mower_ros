@@ -11,7 +11,8 @@ import rospy
 from geometry_msgs.msg import Twist
 from mower_msgs.msg import Emergency, ESCStatus, HighLevelStatus, Power, Status
 from mower_msgs.srv import HighLevelControlSrv, HighLevelControlSrvRequest, MowerControlSrv
-from std_msgs.msg import String
+from sensor_msgs.msg import Imu, Range
+from std_msgs.msg import Bool, String
 from xbot_msgs.msg import AbsolutePose
 
 
@@ -44,10 +45,20 @@ class BridgeState:
         self.left_esc = None
         self.right_esc = None
         self.pose = None
+        self.last_seen = {}
+
+        # Extended Mega sensors
+        self.sonar = [999, 999, 999]   # cm: [front, left, right]
+        self.bumper = False
+        self.rain_mega = False         # separate from Status.rain_detected
+        self.tilt = False
+        self.wire_detected = True
+        self.mega_compass_deg = 0.0
 
     def update(self, name, msg):
         with self.lock:
             setattr(self, name, msg)
+            self.last_seen[name] = time.time()
 
     def snapshot(self):
         with self.lock:
@@ -63,7 +74,14 @@ class BridgeState:
                 "left_esc": self.left_esc,
                 "right_esc": self.right_esc,
                 "pose": self.pose,
+                "last_seen": dict(self.last_seen),
                 "last_setting_updates": dict(self.last_setting_updates),
+                "sonar": list(self.sonar),
+                "bumper": self.bumper,
+                "rain_mega": self.rain_mega,
+                "tilt": self.tilt,
+                "wire_detected": self.wire_detected,
+                "mega_compass_deg": self.mega_compass_deg,
             }
 
     def set_manual_active(self, active, hold_seconds=2.0):
@@ -101,6 +119,16 @@ class IOSBridge:
         rospy.Subscriber("/ll/diff_drive/left_esc_status", ESCStatus, self.state.update, "left_esc")
         rospy.Subscriber("/ll/diff_drive/right_esc_status", ESCStatus, self.state.update, "right_esc")
         rospy.Subscriber("/xbot_positioning/xb_pose", AbsolutePose, self.state.update, "pose")
+
+        # Extended Mega sensor topics
+        rospy.Subscriber("/mega/sonar/front", Range, lambda m: self._cb_sonar(m, 0))
+        rospy.Subscriber("/mega/sonar/left",  Range, lambda m: self._cb_sonar(m, 1))
+        rospy.Subscriber("/mega/sonar/right", Range, lambda m: self._cb_sonar(m, 2))
+        rospy.Subscriber("/mega/bumper",       Bool, self._cb_bumper)
+        rospy.Subscriber("/mega/rain",         Bool, self._cb_rain_mega)
+        rospy.Subscriber("/mega/tilt",         Bool, self._cb_tilt)
+        rospy.Subscriber("/mega/wire_detected",Bool, self._cb_wire)
+        rospy.Subscriber("/mega/imu",          Imu,  self._cb_compass_imu)
 
         self.httpd = None
 
@@ -156,12 +184,19 @@ class IOSBridge:
                 self._send_json(request, self.settings_payload())
             elif method == "POST" and path == "/api/command":
                 body = self._read_json(request)
-                self.handle_command(str(body.get("command", "")))
-                self._send_json(request, {"ok": True})
+                try:
+                    self.handle_command(str(body.get("command", "")))
+                    self._send_json(request, {"ok": True})
+                except (RuntimeError, ValueError) as exc:
+                    rospy.logwarn("[ios_bridge] command '%s' rejected: %s", body.get("command", ""), exc)
+                    self._send_json(request, {"ok": False, "error": str(exc)})
             elif method == "POST" and path == "/api/manual":
                 body = self._read_json(request)
-                self.handle_manual(str(body.get("direction", "stop")))
-                self._send_json(request, {"ok": True})
+                try:
+                    self.handle_manual(str(body.get("direction", "stop")))
+                    self._send_json(request, {"ok": True})
+                except (RuntimeError, ValueError) as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
             elif method == "POST" and path == "/api/settings":
                 body = self._read_json(request)
                 self.handle_setting(body)
@@ -232,11 +267,17 @@ class IOSBridge:
         docked = state == "docked"
         parked = state == "parked"
 
+        bumper       = snap.get("bumper", False)
+        tilt_active  = snap.get("tilt", False)
+        wire_det     = snap.get("wire_detected", True)
+        rain_mega    = snap.get("rain_mega", False)
+        rain_detected = bool((low and low.rain_detected) or rain_mega)
+
         return {
             "connection": "connected",
             "state": state,
             "robotStatus": int(low.mower_status) if low else 0,
-            "errorCode": 3 if emergency_active else 0,
+            "errorCode": 3 if emergency_active else (4 if tilt_active else 0),
             "batteryVoltage": battery_voltage,
             "chargeCurrent": charge_current,
             "wheelCurrent": wheel_current,
@@ -245,14 +286,16 @@ class IOSBridge:
             "parked": parked,
             "running": running,
             "trackingWire": state == "trackingWire",
-            "wireDetected": True,
-            "outsideWire": False,
-            "rainDetected": bool(low and low.rain_detected),
+            "wireDetected": wire_det,
+            "outsideWire": not wire_det and running,
+            "rainDetected": rain_detected,
             "bladesOn": bool(low and low.mow_enabled),
+            "bumper": bumper,
+            "tiltActive": tilt_active,
             "lowBattery": False,
             "wheelBlocked": False,
-            "alarm1Enabled": False,
-            "alarm2Enabled": False,
+            "alarm1Enabled": tilt_active,
+            "alarm2Enabled": rain_detected,
             "alarm3Enabled": False,
             "lastUpdated": now_ms(),
         }
@@ -262,13 +305,12 @@ class IOSBridge:
         pose = snap["pose"]
         left_esc = snap["left_esc"]
         right_esc = snap["right_esc"]
+        sonar = snap.get("sonar", [999, 999, 999])   # [front, left, right]
 
         heading = 0.0
         compass_error = 0.0
-        gps_inside_fence = True
         if pose:
             heading = math.degrees(float(pose.vehicle_heading))
-            gps_inside_fence = bool(pose.flags & AbsolutePose.FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE)
             compass_error = float(pose.position_accuracy)
 
         pwm_left = self._rpm_to_pwm(left_esc.rpm) if left_esc else 0
@@ -277,21 +319,26 @@ class IOSBridge:
         if pwm_left > 0 or pwm_right > 0:
             wheel_status = 5
 
+        bumper = snap.get("bumper", False)
+        tilt   = snap.get("tilt", False)
+
         return {
             "loopCycle": int(time.time()) % 100000,
-            "sonarLeftCm": 0,
-            "sonarCenterCm": 0,
-            "sonarRightCm": 0,
+            "sonarCenterCm": sonar[0],
+            "sonarLeftCm":   sonar[1],
+            "sonarRightCm":  sonar[2],
             "sonarLeftHits": 0,
             "sonarCenterHits": 0,
             "sonarRightHits": 0,
-            "sonarTriggered": False,
-            "bumper": False,
-            "tiltAngle": False,
-            "tipOver": False,
-            "gpsInsideFence": gps_inside_fence,
+            "sonarTriggered": any(s < 30 for s in sonar if s < 999),
+            "bumper": bumper,
+            "tiltAngle": tilt,
+            "tipOver": tilt,
+            "gpsInsideFence": self._gps_fix_type(pose) != "none",
+            "gpsFixType": self._gps_fix_type(pose),
             "compassHeading": heading,
             "compassError": compass_error,
+            "megaCompassDeg": snap.get("mega_compass_deg", 0.0),
             "magNow": 0,
             "pwmLeft": pwm_left,
             "pwmRight": pwm_right,
@@ -329,13 +376,87 @@ class IOSBridge:
             "isEnabled": None,
         }
 
+    # ── Extended sensor callbacks ──────────────────────────────────────────────
+
+    def _cb_sonar(self, msg, idx):
+        cm = 999 if (math.isinf(msg.range) or msg.range >= 9.99) else int(msg.range * 100)
+        with self.state.lock:
+            self.state.sonar[idx] = cm
+
+    def _cb_bumper(self, msg):
+        with self.state.lock:
+            self.state.bumper = bool(msg.data)
+
+    def _cb_rain_mega(self, msg):
+        with self.state.lock:
+            self.state.rain_mega = bool(msg.data)
+
+    def _cb_tilt(self, msg):
+        with self.state.lock:
+            self.state.tilt = bool(msg.data)
+
+    def _cb_wire(self, msg):
+        with self.state.lock:
+            self.state.wire_detected = bool(msg.data)
+
+    def _cb_compass_imu(self, msg):
+        q = msg.orientation
+        yaw_rad = math.atan2(2.0 * (q.w * q.z + q.x * q.y),
+                             1.0 - 2.0 * (q.y * q.y + q.z * q.z))
+        deg = math.degrees(yaw_rad)
+        if deg < 0:
+            deg += 360.0
+        with self.state.lock:
+            self.state.mega_compass_deg = deg
+
+    def _gps_fix_type(self, pose):
+        """Classify RTK fix quality from AbsolutePose.position_accuracy."""
+        if pose is None:
+            return "none"
+        has_recent = bool(pose.flags & AbsolutePose.FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE)
+        if not has_recent:
+            return "none"
+        accuracy = float(pose.position_accuracy)
+        if accuracy <= 0.05:
+            return "fixed"   # RTK Fixed
+        if accuracy <= 0.5:
+            return "float"   # RTK Float
+        return "single"      # GPS but no RTK
+
+    def _check_hardware(self, snap, require_high_level=False):
+        low = snap["low_level"]
+        emergency = snap["emergency"]
+        high = snap["high_level"]
+        last_seen = snap.get("last_seen", {})
+        now = time.time()
+        low_age = now - last_seen.get("low_level", 0.0)
+        if low is None or low_age > 3.0:
+            raise RuntimeError(
+                "Mega no conectado — sin datos de /ll/mower_status. "
+                "Verifica mower_mega_bridge y el cable serie."
+            )
+        if emergency and (emergency.active_emergency or emergency.latched_emergency):
+            raise RuntimeError(
+                "Emergencia activa — desactiva la parada de emergencia antes de continuar."
+            )
+        high_age = now - last_seen.get("high_level", 0.0)
+        if require_high_level and (high is None or high_age > 5.0):
+            raise RuntimeError(
+                "Módulo de lógica no disponible — /mower_logic/current_state sin datos. "
+                "Verifica que mower_logic esté en ejecución."
+            )
+
     def handle_command(self, command):
-        rospy.loginfo("iOS command: %s", command)
+        snap = self.state.snapshot()
+        rospy.loginfo("[ios_bridge] command: %s", command)
         if command in ("start", "exitDock"):
+            self._check_hardware(snap, require_high_level=True)
             self._call_high_level(HighLevelControlSrvRequest.COMMAND_START)
         elif command == "dock":
+            self._check_hardware(snap, require_high_level=True)
             self._call_high_level(HighLevelControlSrvRequest.COMMAND_HOME)
         elif command == "stop":
+            self._check_hardware(snap)
             self.action_pub.publish(String("mower_logic:mowing/pause"))
             self._publish_manual_twist("stop")
             self.state.set_manual_active(False)
@@ -344,13 +465,16 @@ class IOSBridge:
         elif command == "manualMode":
             self.state.set_manual_active(True, hold_seconds=60.0)
         elif command == "bladeOn":
+            self._check_hardware(snap)
             self._call_mower_control(True)
         elif command == "bladeOff":
+            self._check_hardware(snap)
             self._call_mower_control(False)
         else:
-            raise ValueError("unsupported command '{}'".format(command))
+            raise ValueError("Comando '{}' no reconocido.".format(command))
 
     def handle_manual(self, direction):
+        self._check_hardware(self.state.snapshot())
         self._publish_manual_twist(direction)
         self.state.set_manual_active(direction != "stop")
 
@@ -364,16 +488,30 @@ class IOSBridge:
             self.angular_speed = clamp(value, 0.1, 2.0)
 
     def _call_high_level(self, command):
+        svc = "/mower_service/high_level_control"
         try:
+            rospy.wait_for_service(svc, timeout=1.0)
             self.high_level_srv(command)
+        except rospy.ROSException:
+            raise RuntimeError(
+                "Servicio {} no disponible. "
+                "¿Está mower_logic en ejecución?".format(svc)
+            )
         except rospy.ServiceException as exc:
-            raise RuntimeError("high level service failed: {}".format(exc))
+            raise RuntimeError("Error en {}: {}".format(svc, exc))
 
     def _call_mower_control(self, enabled):
+        svc = "/ll/_service/mow_enabled"
         try:
+            rospy.wait_for_service(svc, timeout=1.0)
             self.mower_control_srv(1 if enabled else 0, 0)
+        except rospy.ROSException:
+            raise RuntimeError(
+                "Servicio {} no disponible. "
+                "¿Está mower_mega_bridge en ejecución?".format(svc)
+            )
         except rospy.ServiceException as exc:
-            raise RuntimeError("mower control service failed: {}".format(exc))
+            raise RuntimeError("Error en {}: {}".format(svc, exc))
 
     def _publish_manual_twist(self, direction):
         twist = Twist()

@@ -263,6 +263,40 @@ EOF
   sudo systemctl enable openmower-wifi.service
 }
 
+setup_shell_env() {
+  local marker="OpenMower ROS environment (managed by setup_raspberry_ubuntu.sh)"
+  local bashrc="$HOME/.bashrc"
+  local profiled="/etc/profile.d/openmower-ros.sh"
+
+  # /etc/profile.d/ — loaded for all interactive login shells (SSH, TTY).
+  # More robust than ~/.bashrc which is skipped by login-shell SSH sessions.
+  sudo tee "${profiled}" > /dev/null << PROFILED
+export ROS_DISTRO=${ROS_DISTRO}
+source "/opt/ros/${ROS_DISTRO}/setup.bash"
+[[ -f "${REPO_ROOT}/devel/setup.bash" ]] && source "${REPO_ROOT}/devel/setup.bash"
+[[ -f "${REPO_ROOT}/mower_config.sh"  ]] && source "${REPO_ROOT}/mower_config.sh"
+PROFILED
+  sudo chmod 644 "${profiled}"
+
+  # Also write to ~/.bashrc for interactive non-login shells (local terminals).
+  if grep -q "${marker}" "${bashrc}" 2>/dev/null; then
+    sed -i "/# >>> ${marker}/,/# <<< ${marker}/d" "${bashrc}"
+  fi
+
+  cat >> "${bashrc}" <<BASHRC_BLOCK
+
+# >>> ${marker} >>>
+# Sourced automatically — do not edit this block by hand; re-run setup to update.
+export ROS_DISTRO=${ROS_DISTRO}
+source "/opt/ros/${ROS_DISTRO}/setup.bash"
+[[ -f "${REPO_ROOT}/devel/setup.bash"  ]] && source "${REPO_ROOT}/devel/setup.bash"
+[[ -f "${REPO_ROOT}/mower_config.sh"   ]] && source "${REPO_ROOT}/mower_config.sh"
+# <<< ${marker} <<<
+BASHRC_BLOCK
+
+  echo "Shell environment written to ${bashrc} and ${profiled}."
+}
+
 if [[ "${EUID}" -eq 0 ]]; then
   echo "Run this script as a normal user with sudo access, not as root." >&2
   exit 1
@@ -554,6 +588,7 @@ fi
 
 write_default_env
 install_wifi_service
+setup_shell_env
 warn_if_env_needs_editing
 
 if [[ "${SKIP_BUILD}" -ne 1 ]]; then
@@ -578,17 +613,14 @@ cat <<EOF
 
 Setup finished.
 
-Before launching OpenMower in a new shell:
-  cd ${REPO_ROOT}
-  source /opt/ros/${ROS_DISTRO}/setup.bash
-  source devel/setup.bash
-  source mower_config.sh
-  set -a
-  source .env
-  set +a
+The shell environment is now configured automatically in ~/.bashrc.
+Open a new terminal (or run: source ~/.bashrc) and launch directly:
 
-Then launch:
+  cd ${REPO_ROOT}
   roslaunch open_mower open_mower.launch
+
+If you ever need to reload the environment manually in the current shell:
+  source ~/.bashrc
 
 Wi-Fi auto-connect:
   Edit ${ENV_FILE} with MOWER_WIFI_SSID and MOWER_WIFI_PASSWORD.
