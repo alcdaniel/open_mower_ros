@@ -14,6 +14,7 @@ COPY_CONFIG=1
 ALLOW_UNSUPPORTED_OS=0
 WITH_RVIZ=0
 INSTALL_WIFI_SERVICE=1
+CONFIGURE_UART=1
 
 usage() {
   cat <<'EOF'
@@ -36,6 +37,7 @@ Options:
   --skip-swap              Do not auto-create /swapfile before building
   --no-copy-config         Do not create mower_config.sh
   --no-wifi-service        Do not install the Wi-Fi systemd service
+  --no-uart-config         Do not configure Raspberry UART for Mega bridge
   --allow-unsupported-os   Continue even if Ubuntu codename is not focal
   --with-rviz              Install rviz for local debugging on the Raspberry
   -h, --help               Show this help
@@ -62,6 +64,9 @@ while [[ $# -gt 0 ]]; do
     --no-wifi-service)
       INSTALL_WIFI_SERVICE=0
       ;;
+    --no-uart-config)
+      CONFIGURE_UART=0
+      ;;
     --allow-unsupported-os)
       ALLOW_UNSUPPORTED_OS=1
       ;;
@@ -86,6 +91,50 @@ require_command() {
   if ! command -v "${command_name}" >/dev/null 2>&1; then
     echo "Missing required command: ${command_name}" >&2
     exit 1
+  fi
+}
+
+configure_uart_for_mega_bridge() {
+  if [[ "${CONFIGURE_UART}" -ne 1 ]]; then
+    return
+  fi
+
+  local boot_cfg="/boot/firmware/config.txt"
+  local needs_reboot=0
+
+  echo "Configuring Raspberry UART for Mega bridge..."
+
+  if [[ -f "${boot_cfg}" ]]; then
+    if grep -qE '^[[:space:]]*enable_uart=1[[:space:]]*$' "${boot_cfg}"; then
+      :
+    elif grep -qE '^[[:space:]]*#?[[:space:]]*enable_uart=' "${boot_cfg}"; then
+      sudo sed -i -E 's/^[[:space:]]*#?[[:space:]]*enable_uart=.*/enable_uart=1/' "${boot_cfg}"
+      needs_reboot=1
+    else
+      echo 'enable_uart=1' | sudo tee -a "${boot_cfg}" >/dev/null
+      needs_reboot=1
+    fi
+  else
+    echo "Warning: ${boot_cfg} not found. Skipping enable_uart setting."
+  fi
+
+  # Ensure no login console grabs the UART.
+  sudo systemctl disable --now serial-getty@ttyAMA0.service >/dev/null 2>&1 || true
+  sudo systemctl disable --now serial-getty@ttyS0.service >/dev/null 2>&1 || true
+
+  # Ensure current user can open serial devices without sudo.
+  if id -nG "${USER}" | grep -qw dialout; then
+    :
+  else
+    sudo usermod -aG dialout "${USER}"
+    echo "Added ${USER} to dialout group (logout/login required)."
+  fi
+
+  echo "UART device snapshot:"
+  ls -l /dev/ttyAMA* /dev/ttyS* 2>/dev/null || true
+
+  if [[ "${needs_reboot}" -eq 1 ]]; then
+    echo "UART boot config changed. Reboot required to apply enable_uart=1."
   fi
 }
 
@@ -332,6 +381,7 @@ EOF
 fi
 
 sudo -v
+configure_uart_for_mega_bridge
 
 repair_apt_state
 
