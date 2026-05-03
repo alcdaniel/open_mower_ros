@@ -750,7 +750,7 @@ int main(int argc, char** argv) {
   }
 
   ROS_INFO("Waiting for a pose message");
-  while (!power_state_subscriber.hasMessage()) {
+  while (!pose_state_subscriber.hasMessage()) {
     if (!ros::ok()) {
       delete (reconfigServer);
       delete (mbfClient);
@@ -863,20 +863,12 @@ int main(int argc, char** argv) {
 
   ROS_INFO("Waiting for move base flex");
   if (!mbfClient->waitForServer(ros::Duration(60.0, 0.0))) {
-    ROS_ERROR("Move base flex not found.");
-    delete (reconfigServer);
-    delete (mbfClient);
-    delete (mbfClientExePath);
-    return 3;
+    ROS_WARN("Move base flex not found. Continuing in degraded mode without MBF.");
   }
 
   ROS_INFO("Waiting for mowing path progress server");
   if (!pathProgressClient.waitForExistence(ros::Duration(60.0, 0.0))) {
-    ROS_ERROR("FTCLocalPlanner progress server not found.");
-    delete (reconfigServer);
-    delete (mbfClient);
-    delete (mbfClientExePath);
-    return 3;
+    ROS_WARN("FTCLocalPlanner progress server not found. Continuing in degraded mode.");
   }
 
   ros::Time started = ros::Time::now();
