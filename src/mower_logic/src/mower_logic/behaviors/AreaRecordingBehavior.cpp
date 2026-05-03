@@ -32,7 +32,11 @@ std::string AreaRecordingBehavior::state_name() {
 }
 
 Behavior* AreaRecordingBehavior::execute() {
-  setGPS(true);
+  if (config.enable_gps_in_area_recording) {
+    setGPS(true);
+  } else {
+    setGPS(false);
+  }
   bool error = false;
   ros::Rate inputDelay(ros::Duration().fromSec(0.1));
 

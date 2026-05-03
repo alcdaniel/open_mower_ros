@@ -47,32 +47,51 @@ std::string IdleBehavior::state_name() {
 }
 
 Behavior* IdleBehavior::execute() {
-  // Check, if we have a configured map. If not, print info and go to area recorder
+  bool map_configured = false;
+  bool dock_configured = false;
   mower_map::GetMowingAreaSrv mapSrv;
   mapSrv.request.index = 0;
-  if (!mapClient.call(mapSrv)) {
-    ROS_WARN("We don't have a map configured. Starting Area Recorder!");
-    return &AreaRecordingBehavior::INSTANCE;
-  }
-
-  // Check, if we have a docking position. If not, print info and go to area recorder
   mower_map::GetDockingPointSrv get_docking_point_srv;
-  if (!dockingPointClient.call(get_docking_point_srv)) {
-    ROS_WARN("We don't have a docking point configured. Starting Area Recorder!");
-    return &AreaRecordingBehavior::INSTANCE;
-  }
-
-  setGPS(false);
   geometry_msgs::PoseStamped docking_pose_stamped;
-  docking_pose_stamped.pose = get_docking_point_srv.response.docking_pose;
   docking_pose_stamped.header.frame_id = "map";
   docking_pose_stamped.header.stamp = ros::Time::now();
+
+  ros::Time last_config_check(0.0);
+
+  setGPS(false);
 
   ros::Rate r(25);
   while (ros::ok()) {
     stopMoving();
     stopBlade();
     const auto last_config = getConfig();
+
+    if ((ros::Time::now() - last_config_check) > ros::Duration(1.0)) {
+      map_configured = mapClient.call(mapSrv);
+      dock_configured = dockingPointClient.call(get_docking_point_srv);
+      last_config_check = ros::Time::now();
+
+      if (!map_configured) {
+        if (last_config.auto_start_area_recording) {
+          ROS_WARN("We don't have a map configured. Starting Area Recorder!");
+          return &AreaRecordingBehavior::INSTANCE;
+        }
+        ROS_WARN_STREAM_THROTTLE(5, "We don't have a map configured. Staying in IDLE.");
+      }
+
+      if (!dock_configured) {
+        if (last_config.auto_start_area_recording) {
+          ROS_WARN("We don't have a docking point configured. Starting Area Recorder!");
+          return &AreaRecordingBehavior::INSTANCE;
+        }
+        ROS_WARN_STREAM_THROTTLE(5, "We don't have a docking point configured. Staying in IDLE.");
+      }
+
+      if (dock_configured) {
+        docking_pose_stamped.pose = get_docking_point_srv.response.docking_pose;
+        docking_pose_stamped.header.stamp = ros::Time::now();
+      }
+    }
     const auto last_power_config = getPowerConfig();
     const auto last_status = getStatus();
     const auto last_power = getPower();
@@ -94,7 +113,8 @@ Behavior* IdleBehavior::execute() {
                              last_status.mower_motor_temperature < last_config.motor_cold_temperature &&
                              !last_config.manual_pause_mowing && !rain_delay;
 
-    if (manual_start_mowing || ((automatic_mode || active_semiautomatic_task) && mower_ready)) {
+    const bool has_required_map = map_configured && dock_configured;
+    if (has_required_map && (manual_start_mowing || ((automatic_mode || active_semiautomatic_task) && mower_ready))) {
       // set the robot's position to the dock if we're actually docked
       if (last_charge_v > 5.0) {
         if (PerimeterUndockingBehavior::configured(config)) return &PerimeterUndockingBehavior::INSTANCE;

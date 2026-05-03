@@ -664,8 +664,10 @@ private:
             {
                 std::lock_guard<std::mutex> lk(state_mutex_);
                 if (!parseIntField(fields, 0, charging_, charging_)) {
-                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid CHARGE field: '%s'",
-                                      fields.empty() ? "" : fields[0].c_str());
+                    if (!(fields.empty() || isUnavailableToken(fields[0]))) {
+                        ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid CHARGE field: '%s'",
+                                          fields[0].c_str());
+                    }
                 }
                 pm.battery_voltage_chg = static_cast<float>(volts_);
                 pm.charge_current      = static_cast<float>(charging_);
