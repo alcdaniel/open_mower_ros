@@ -1,5 +1,5 @@
 <launch>
-    <group if="$(optenv OM_IOS_BRIDGE_USE_CPP False)">
+    <group if="$(optenv OM_IOS_BRIDGE_USE_CPP True)">
         <node pkg="mower_ios_bridge" type="mower_ios_bridge_node" name="mower_ios_bridge" output="screen"
               respawn="true" respawn_delay="10">
             <param name="host" value="$(optenv OM_IOS_BRIDGE_HOST 0.0.0.0)"/>
@@ -13,7 +13,7 @@
         </node>
     </group>
 
-    <group unless="$(optenv OM_IOS_BRIDGE_USE_CPP False)">
+    <group unless="$(optenv OM_IOS_BRIDGE_USE_CPP True)">
         <node pkg="mower_ios_bridge" type="mower_ios_bridge_node.py" name="mower_ios_bridge" output="screen"
               respawn="true" respawn_delay="10">
             <param name="host" value="$(optenv OM_IOS_BRIDGE_HOST 0.0.0.0)"/>

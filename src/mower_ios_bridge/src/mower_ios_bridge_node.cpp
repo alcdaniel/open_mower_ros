@@ -1381,7 +1381,7 @@ class MowerIosBridgeNode {
       std_msgs::String action;
       action.data = "mower_logic:mowing/pause";
       action_pub_.publish(action);
-      publishManualTwist("stop");
+      publishManualTwist(json{{"direction", "stop"}});
       setManualActive(false);
     } else if (command == "autoMode") {
       setManualActive(false);
@@ -1398,10 +1398,10 @@ class MowerIosBridgeNode {
     }
   }
 
-  void handleManual(const std::string& direction) {
+  void handleManual(const json& body) {
     checkHardware(snapshot(), false);
-    publishManualTwist(direction);
-    setManualActive(direction != "stop");
+    const bool active = publishManualTwist(body);
+    setManualActive(active);
   }
 
   json handleSetting(const json& body) {
@@ -1490,8 +1490,27 @@ class MowerIosBridgeNode {
     }
   }
 
-  void publishManualTwist(const std::string& direction) {
+  bool publishManualTwist(const json& body) {
     geometry_msgs::Twist twist;
+    if (body.contains("x") || body.contains("y")) {
+      const double x = clampValue(body.value("x", 0.0), -1.0, 1.0);
+      const double y = clampValue(body.value("y", 0.0), -1.0, 1.0);
+      twist.linear.x = y * linear_speed_.load();
+      twist.angular.z = x * angular_speed_.load();
+      joy_vel_pub_.publish(twist);
+      return std::abs(x) > 1e-3 || std::abs(y) > 1e-3;
+    }
+
+    std::string direction = body.value("direction", "stop");
+    for (char& c : direction) c = static_cast<char>(std::tolower(c));
+
+    if (direction == "up") direction = "forward";
+    else if (direction == "down" || direction == "backward") direction = "reverse";
+    else if (direction == "upleft" || direction == "up_left") direction = "forward_left";
+    else if (direction == "upright" || direction == "up_right") direction = "forward_right";
+    else if (direction == "downleft" || direction == "down_left") direction = "reverse_left";
+    else if (direction == "downright" || direction == "down_right") direction = "reverse_right";
+
     if (direction == "forward") {
       twist.linear.x = linear_speed_.load();
     } else if (direction == "reverse") {
@@ -1500,11 +1519,26 @@ class MowerIosBridgeNode {
       twist.angular.z = angular_speed_.load();
     } else if (direction == "right") {
       twist.angular.z = -angular_speed_.load();
+    } else if (direction == "forward_left") {
+      twist.linear.x = linear_speed_.load();
+      twist.angular.z = angular_speed_.load();
+    } else if (direction == "forward_right") {
+      twist.linear.x = linear_speed_.load();
+      twist.angular.z = -angular_speed_.load();
+    } else if (direction == "reverse_left") {
+      twist.linear.x = -linear_speed_.load();
+      twist.angular.z = angular_speed_.load();
+    } else if (direction == "reverse_right") {
+      twist.linear.x = -linear_speed_.load();
+      twist.angular.z = -angular_speed_.load();
     } else if (direction == "stop") {
+      joy_vel_pub_.publish(twist);
+      return false;
     } else {
       throw std::runtime_error("unsupported manual direction '" + direction + "'");
     }
     joy_vel_pub_.publish(twist);
+    return true;
   }
 
   // ----- Wait helpers -----
@@ -1671,7 +1705,7 @@ class MowerIosBridgeNode {
       if (req.method() == http::verb::post && path == "/api/manual") {
         const json body = readJsonBody(req.body());
         try {
-          handleManual(body.value("direction", "stop"));
+          handleManual(body);
           return jsonResponse(http::status::ok, json{{"ok", true}});
         } catch (const std::exception& exc) {
           return jsonResponse(http::status::ok, json{{"ok", false}, {"error", exc.what()}});

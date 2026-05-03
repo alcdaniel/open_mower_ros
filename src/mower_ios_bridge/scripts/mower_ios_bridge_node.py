@@ -260,7 +260,7 @@ class IOSBridge:
             elif method == "POST" and path == "/api/manual":
                 body = self._read_json(request)
                 try:
-                    self.handle_manual(str(body.get("direction", "stop")))
+                    self.handle_manual(body)
                     self._send_json(request, {"ok": True})
                 except (RuntimeError, ValueError) as exc:
                     self._send_json(request, {"ok": False, "error": str(exc)})
@@ -1355,10 +1355,10 @@ class IOSBridge:
         else:
             raise ValueError("Comando '{}' no reconocido.".format(command))
 
-    def handle_manual(self, direction):
+    def handle_manual(self, manual):
         self._check_hardware(self.state.snapshot())
-        self._publish_manual_twist(direction)
-        self.state.set_manual_active(direction != "stop")
+        active = self._publish_manual_twist(manual)
+        self.state.set_manual_active(active)
 
     def handle_setting(self, body):
         setting_id = str(body.get("id", ""))
@@ -1435,8 +1435,46 @@ class IOSBridge:
         except rospy.ServiceException as exc:
             raise RuntimeError("Error en {}: {}".format(svc, exc))
 
-    def _publish_manual_twist(self, direction):
+    def _publish_manual_twist(self, manual):
         twist = Twist()
+
+        # Preferred mode: analog joystick axes in body:
+        #   x in [-1, 1] => turn (left +, right -)
+        #   y in [-1, 1] => linear (forward +, reverse -)
+        if isinstance(manual, dict):
+            has_axes = ("x" in manual) or ("y" in manual)
+            if has_axes:
+                x = clamp(float(manual.get("x", 0.0)), -1.0, 1.0)
+                y = clamp(float(manual.get("y", 0.0)), -1.0, 1.0)
+                twist.linear.x = y * self.linear_speed
+                twist.angular.z = x * self.angular_speed
+                self.joy_vel_pub.publish(twist)
+                return (abs(x) > 1e-3) or (abs(y) > 1e-3)
+            direction = str(manual.get("direction", "stop")).strip().lower()
+        else:
+            direction = str(manual).strip().lower()
+
+        # Compatibility mode: discrete direction strings.
+        aliases = {
+            "up": "forward",
+            "down": "reverse",
+            "backward": "reverse",
+            "front": "forward",
+            "forwards": "forward",
+            "backwards": "reverse",
+            "upleft": "forward_left",
+            "up_left": "forward_left",
+            "up-right": "forward_right",
+            "upright": "forward_right",
+            "up_right": "forward_right",
+            "downleft": "reverse_left",
+            "down_left": "reverse_left",
+            "down-right": "reverse_right",
+            "downright": "reverse_right",
+            "down_right": "reverse_right",
+        }
+        direction = aliases.get(direction, direction)
+
         if direction == "forward":
             twist.linear.x = self.linear_speed
         elif direction == "reverse":
@@ -1445,11 +1483,24 @@ class IOSBridge:
             twist.angular.z = self.angular_speed
         elif direction == "right":
             twist.angular.z = -self.angular_speed
-        elif direction == "stop":
+        elif direction == "forward_left":
+            twist.linear.x = self.linear_speed
+            twist.angular.z = self.angular_speed
+        elif direction == "forward_right":
+            twist.linear.x = self.linear_speed
+            twist.angular.z = -self.angular_speed
+        elif direction == "reverse_left":
+            twist.linear.x = -self.linear_speed
+            twist.angular.z = self.angular_speed
+        elif direction == "reverse_right":
+            twist.linear.x = -self.linear_speed
+            twist.angular.z = -self.angular_speed
+        elif direction in ("stop", "center", "idle"):
             pass
         else:
             raise ValueError("unsupported manual direction '{}'".format(direction))
         self.joy_vel_pub.publish(twist)
+        return direction not in ("stop", "center", "idle")
 
     def _operating_state(self, high, low, emergency_active, charging, manual_active):
         if emergency_active:
