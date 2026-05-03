@@ -100,6 +100,7 @@ configure_uart_for_mega_bridge() {
   fi
 
   local boot_cfg="/boot/firmware/config.txt"
+  local cmdline_cfg="/boot/firmware/cmdline.txt"
   local needs_reboot=0
 
   echo "Configuring Raspberry UART for Mega bridge..."
@@ -118,6 +119,28 @@ configure_uart_for_mega_bridge() {
     echo "Warning: ${boot_cfg} not found. Skipping enable_uart setting."
   fi
 
+  # Remove serial console arguments that can still claim UART at boot.
+  if [[ -f "${cmdline_cfg}" ]]; then
+    local old_cmdline new_cmdline
+    old_cmdline="$(cat "${cmdline_cfg}")"
+    new_cmdline="${old_cmdline}"
+    new_cmdline="${new_cmdline//console=serial0,115200 /}"
+    new_cmdline="${new_cmdline//console=ttyAMA0,115200 /}"
+    new_cmdline="${new_cmdline//console=ttyS0,115200 /}"
+    # Also handle cases where token is at end without trailing space.
+    new_cmdline="${new_cmdline// console=serial0,115200/}"
+    new_cmdline="${new_cmdline// console=ttyAMA0,115200/}"
+    new_cmdline="${new_cmdline// console=ttyS0,115200/}"
+
+    if [[ "${new_cmdline}" != "${old_cmdline}" ]]; then
+      echo "${new_cmdline}" | sudo tee "${cmdline_cfg}" >/dev/null
+      needs_reboot=1
+      echo "Removed serial console from ${cmdline_cfg}."
+    fi
+  else
+    echo "Warning: ${cmdline_cfg} not found. Skipping cmdline UART-console cleanup."
+  fi
+
   # Ensure no login console grabs the UART.
   sudo systemctl disable --now serial-getty@ttyAMA0.service >/dev/null 2>&1 || true
   sudo systemctl disable --now serial-getty@ttyS0.service >/dev/null 2>&1 || true
@@ -134,7 +157,7 @@ configure_uart_for_mega_bridge() {
   ls -l /dev/ttyAMA* /dev/ttyS* 2>/dev/null || true
 
   if [[ "${needs_reboot}" -eq 1 ]]; then
-    echo "UART boot config changed. Reboot required to apply enable_uart=1."
+    echo "UART boot config changed. Reboot required to apply UART settings."
   fi
 }
 
