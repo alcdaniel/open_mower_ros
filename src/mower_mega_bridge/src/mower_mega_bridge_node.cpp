@@ -121,6 +121,52 @@ static bool parseMsg(const std::string& raw,
     return true;
 }
 
+static bool parseDoubleField(const std::vector<std::string>& fields,
+                             std::size_t idx,
+                             double fallback,
+                             double& out)
+{
+    if (idx >= fields.size()) {
+        out = fallback;
+        return true;
+    }
+    const std::string& s = fields[idx];
+    if (s.empty() || s == "?" || s == "nan" || s == "NaN" || s == "NAN") {
+        out = fallback;
+        return false;
+    }
+    try {
+        out = std::stod(s);
+        return true;
+    } catch (...) {
+        out = fallback;
+        return false;
+    }
+}
+
+static bool parseIntField(const std::vector<std::string>& fields,
+                          std::size_t idx,
+                          int fallback,
+                          int& out)
+{
+    if (idx >= fields.size()) {
+        out = fallback;
+        return true;
+    }
+    const std::string& s = fields[idx];
+    if (s.empty() || s == "?" || s == "nan" || s == "NaN" || s == "NAN") {
+        out = fallback;
+        return false;
+    }
+    try {
+        out = std::stoi(s);
+        return true;
+    } catch (...) {
+        out = fallback;
+        return false;
+    }
+}
+
 // ── Bridge class ──────────────────────────────────────────────────────────────
 
 class MegaBridge
@@ -497,7 +543,10 @@ private:
             mower_msgs::Power pm;
             {
                 std::lock_guard<std::mutex> lk(state_mutex_);
-                volts_ = fields.empty() ? 0.0 : std::stod(fields[0]);
+                if (!parseDoubleField(fields, 0, volts_, volts_)) {
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid BATT field: '%s'",
+                                      fields.empty() ? "" : fields[0].c_str());
+                }
                 pm.battery_voltage_chg = static_cast<float>(volts_);
                 pm.charge_current      = static_cast<float>(charging_);
             }
@@ -505,13 +554,19 @@ private:
 
         } else if (type == "AMPS") {
             std::lock_guard<std::mutex> lk(state_mutex_);
-            amps_ = fields.empty() ? 0.0 : std::stod(fields[0]);
+            if (!parseDoubleField(fields, 0, amps_, amps_)) {
+                ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid AMPS field: '%s'",
+                                  fields.empty() ? "" : fields[0].c_str());
+            }
 
         } else if (type == "WHEEL_AMPS") {
             mower_msgs::ESCStatus escL, escR;
             {
                 std::lock_guard<std::mutex> lk(state_mutex_);
-                wheel_amps_ = fields.empty() ? 0.0 : std::stod(fields[0]);
+                if (!parseDoubleField(fields, 0, wheel_amps_, wheel_amps_)) {
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid WHEEL_AMPS field: '%s'",
+                                      fields.empty() ? "" : fields[0].c_str());
+                }
                 auto s = (mega_state_ == "RUNNING")
                          ? mower_msgs::ESCStatus::ESC_STATUS_RUNNING
                          : mower_msgs::ESCStatus::ESC_STATUS_OK;
@@ -528,7 +583,10 @@ private:
             mower_msgs::Power pm;
             {
                 std::lock_guard<std::mutex> lk(state_mutex_);
-                charging_ = fields.empty() ? 0 : std::stoi(fields[0]);
+                if (!parseIntField(fields, 0, charging_, charging_)) {
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid CHARGE field: '%s'",
+                                      fields.empty() ? "" : fields[0].c_str());
+                }
                 pm.battery_voltage_chg = static_cast<float>(volts_);
                 pm.charge_current      = static_cast<float>(charging_);
             }
@@ -540,8 +598,15 @@ private:
                 ts.header.stamp = ros::Time::now();
                 {
                     std::lock_guard<std::mutex> lk(state_mutex_);
-                    pwm_l_ = std::stoi(fields[0]);
-                    pwm_r_ = std::stoi(fields[1]);
+                    int pl = pwm_l_;
+                    int pr = pwm_r_;
+                    if (!parseIntField(fields, 0, pwm_l_, pl) ||
+                        !parseIntField(fields, 1, pwm_r_, pr)) {
+                        ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid PWM fields: '%s','%s'",
+                                          fields[0].c_str(), fields[1].c_str());
+                    }
+                    pwm_l_ = pl;
+                    pwm_r_ = pr;
                     double vl = static_cast<double>(pwm_l_) / max_pwm_;
                     double vr = static_cast<double>(pwm_r_) / max_pwm_;
                     ts.twist.linear.x  = (vl + vr) / 2.0;
@@ -598,8 +663,14 @@ private:
                 const char* frames[3] = {"sonar_front", "sonar_left", "sonar_right"};
                 {
                     std::lock_guard<std::mutex> lk(state_mutex_);
-                    for (int i = 0; i < 3; ++i)
-                        sonar_[i] = std::stoi(fields[i]);
+                    for (int i = 0; i < 3; ++i) {
+                        int sv = sonar_[i];
+                        if (!parseIntField(fields, i, sonar_[i], sv)) {
+                            ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid SONAR[%d] field: '%s'",
+                                              i, fields[i].c_str());
+                        }
+                        sonar_[i] = sv;
+                    }
                 }
                 for (int i = 0; i < 3; ++i) {
                     sensor_msgs::Range r;
@@ -645,7 +716,11 @@ private:
             pub_wire_.publish(wm);
 
         } else if (type == "COMPASS") {
-            double deg = fields.empty() ? 0.0 : std::stod(fields[0]);
+            double deg = compass_deg_;
+            if (!parseDoubleField(fields, 0, compass_deg_, deg)) {
+                ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid COMPASS field: '%s'",
+                                  fields.empty() ? "" : fields[0].c_str());
+            }
             { std::lock_guard<std::mutex> lk(state_mutex_); compass_deg_ = deg; }
             // Publish as IMU (yaw only) — robot_localization / EKF can fuse this.
             sensor_msgs::Imu imu;
