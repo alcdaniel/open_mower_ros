@@ -168,6 +168,12 @@ struct StateSnapshot {
   bool tilt = false;
   bool wire_detected = true;
   double mega_compass_deg = 0.0;
+  double mega_gyro_roll_deg = 0.0;
+  double mega_gyro_pitch_deg = 0.0;
+  double mega_gyro_yaw_deg = 0.0;
+  double mega_gyro_rate_x = 0.0;
+  double mega_gyro_rate_y = 0.0;
+  double mega_gyro_rate_z = 0.0;
   std::unordered_map<std::string, std::string> mega_settings;
   bool mega_connected = false;
   std::string mega_connection_status = "Mega no conectado";
@@ -249,6 +255,7 @@ class MowerIosBridgeNode {
     sub_wire_ =
         nh_.subscribe("/mega/wire_detected", 1, &MowerIosBridgeNode::cbWireDetected, this);
     sub_compass_imu_ = nh_.subscribe("/mega/imu", 1, &MowerIosBridgeNode::cbCompassImu, this);
+    sub_gyro_imu_ = nh_.subscribe("/mega/imu_gyro", 1, &MowerIosBridgeNode::cbGyroImu, this);
     sub_cfg_ = nh_.subscribe("/mega/cfg", 10, &MowerIosBridgeNode::cbCfg, this);
     sub_cfg_loaded_ =
         nh_.subscribe("/mega/cfg_loaded", 1, &MowerIosBridgeNode::cbCfgLoaded, this);
@@ -351,6 +358,7 @@ class MowerIosBridgeNode {
   ros::Subscriber sub_tilt_;
   ros::Subscriber sub_wire_;
   ros::Subscriber sub_compass_imu_;
+  ros::Subscriber sub_gyro_imu_;
   ros::Subscriber sub_cfg_;
   ros::Subscriber sub_cfg_loaded_;
   ros::Subscriber sub_mega_connected_;
@@ -459,6 +467,30 @@ class MowerIosBridgeNode {
     if (deg < 0.0) deg += 360.0;
     std::lock_guard<std::recursive_mutex> lock(state_mutex_);
     state_.mega_compass_deg = deg;
+  }
+
+  void cbGyroImu(const sensor_msgs::Imu::ConstPtr& msg) {
+    const auto& q = msg->orientation;
+    const double sinr_cosp = 2.0 * (q.w * q.x + q.y * q.z);
+    const double cosr_cosp = 1.0 - 2.0 * (q.x * q.x + q.y * q.y);
+    const double roll = std::atan2(sinr_cosp, cosr_cosp);
+
+    const double sinp = 2.0 * (q.w * q.y - q.z * q.x);
+    const double pitch = (std::abs(sinp) >= 1.0) ? std::copysign(M_PI / 2.0, sinp) : std::asin(sinp);
+
+    const double siny_cosp = 2.0 * (q.w * q.z + q.x * q.y);
+    const double cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
+    const double yaw = std::atan2(siny_cosp, cosy_cosp);
+
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    state_.mega_gyro_roll_deg = roll * 180.0 / M_PI;
+    state_.mega_gyro_pitch_deg = pitch * 180.0 / M_PI;
+    double yaw_deg = yaw * 180.0 / M_PI;
+    if (yaw_deg < 0.0) yaw_deg += 360.0;
+    state_.mega_gyro_yaw_deg = yaw_deg;
+    state_.mega_gyro_rate_x = msg->angular_velocity.x;
+    state_.mega_gyro_rate_y = msg->angular_velocity.y;
+    state_.mega_gyro_rate_z = msg->angular_velocity.z;
   }
 
   void cbMegaConnected(const std_msgs::Bool::ConstPtr& msg) {
@@ -737,6 +769,12 @@ class MowerIosBridgeNode {
         {"compassHeading", heading},
         {"compassError", compass_error},
         {"megaCompassDeg", snap.mega_compass_deg},
+        {"megaGyroRollDeg", snap.mega_gyro_roll_deg},
+        {"megaGyroPitchDeg", snap.mega_gyro_pitch_deg},
+        {"megaGyroYawDeg", snap.mega_gyro_yaw_deg},
+        {"megaGyroRateX", snap.mega_gyro_rate_x},
+        {"megaGyroRateY", snap.mega_gyro_rate_y},
+        {"megaGyroRateZ", snap.mega_gyro_rate_z},
         {"magNow", 0},
         {"pwmLeft", pwm_left},
         {"pwmRight", pwm_right},

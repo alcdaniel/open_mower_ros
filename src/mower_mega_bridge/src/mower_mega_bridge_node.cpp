@@ -22,7 +22,8 @@
  *   mega/rain                       std_msgs/Bool
  *   mega/tilt                       std_msgs/Bool
  *   mega/wire_detected              std_msgs/Bool
- *   mega/imu                        sensor_msgs/Imu     (yaw only)
+ *   mega/imu                        sensor_msgs/Imu     (yaw only, compass)
+ *   mega/imu_gyro                   sensor_msgs/Imu     (roll/pitch/yaw + gyro rates)
  *   mega/cfg                        std_msgs/String     (key=value, one per setting)
  *   mega/cfg_loaded                 std_msgs/Bool       (true when full dump received)
  *
@@ -46,6 +47,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <cctype>
 #include <iomanip>
 #include <limits>
 #include <mutex>
@@ -187,6 +189,12 @@ public:
         , pwm_r_(0)
         , mega_state_("IDLE")
         , compass_deg_(0.0)
+        , gyro_roll_deg_(0.0)
+        , gyro_pitch_deg_(0.0)
+        , gyro_yaw_deg_(0.0)
+        , gyro_x_raw_(0)
+        , gyro_y_raw_(0)
+        , gyro_z_raw_(0)
         , bumper_(false)
         , rain_(false)
         , tilt_(false)
@@ -224,6 +232,7 @@ public:
         pub_tilt_      = nh.advertise<std_msgs::Bool>("mega/tilt",         1);
         pub_wire_      = nh.advertise<std_msgs::Bool>("mega/wire_detected",1);
         pub_compass_imu_ = nh.advertise<sensor_msgs::Imu>("mega/imu",     1);
+        pub_gyro_imu_ = nh.advertise<sensor_msgs::Imu>("mega/imu_gyro",    1);
         pub_cfg_        = nh.advertise<std_msgs::String>("mega/cfg",        10);
         pub_cfg_loaded_ = nh.advertise<std_msgs::Bool>  ("mega/cfg_loaded",  1);
         pub_connected_  = nh.advertise<std_msgs::Bool>("mega/connected", 1, true);
@@ -289,6 +298,8 @@ private:
     int         pwm_l_, pwm_r_;
     std::string mega_state_;
     double      compass_deg_;
+    double      gyro_roll_deg_, gyro_pitch_deg_, gyro_yaw_deg_;
+    int         gyro_x_raw_, gyro_y_raw_, gyro_z_raw_;
     bool        bumper_, rain_, tilt_, wire_;
     int         sonar_[3];
 
@@ -304,7 +315,7 @@ private:
     ros::Publisher     pub_emergency_, pub_status_, pub_power_;
     ros::Publisher     pub_twist_, pub_esc_l_, pub_esc_r_;
     ros::Publisher     pub_sonar_[3], pub_bumper_, pub_rain_, pub_tilt_, pub_wire_;
-    ros::Publisher     pub_compass_imu_;
+    ros::Publisher     pub_compass_imu_, pub_gyro_imu_;
     ros::Publisher     pub_cfg_, pub_cfg_loaded_;
     ros::Publisher     pub_connected_, pub_connection_status_;
     ros::Subscriber    sub_cmd_vel_, sub_hl_, sub_cfgget_, sub_cfgset_;
@@ -312,6 +323,7 @@ private:
     ros::Timer         status_timer_;
 
     std::thread reader_thread_, hb_thread_;
+    std::string rx_accum_;
 
     // ── Protocol ──────────────────────────────────────────────────────────────
 
@@ -508,13 +520,65 @@ private:
     void serialReader()
     {
         openSerial();
+        rx_accum_.clear();
         while (ros::ok()) {
             if (!ser_open_) { openSerial(); continue; }
             try {
-                // readline does NOT hold write_mutex_ — only the read path uses ser_
-                // serial::Serial read/write are internally serialised via its own mutex
-                std::string line = ser_.readline(256, "\n");
-                if (!line.empty()) handleLine(line);
+                // Robust incremental read:
+                // avoids relying on serial::readline() internals under noisy UART data.
+                size_t n = ser_.available();
+                if (n == 0) {
+                    ros::Duration(0.002).sleep();
+                    continue;
+                }
+                if (n > 512) n = 512;  // cap per cycle
+                std::string chunk = ser_.read(n);
+                if (chunk.empty()) continue;
+
+                rx_accum_.append(chunk);
+                // Hard cap: if peer sends garbage without newlines, drop buffer safely.
+                if (rx_accum_.size() > 4096) {
+                    ROS_WARN_THROTTLE(2.0, "[mega_bridge] RX overflow guard: dropping oversized serial buffer");
+                    rx_accum_.clear();
+                    continue;
+                }
+
+                std::size_t start = 0;
+                while (true) {
+                    std::size_t nl = rx_accum_.find('\n', start);
+                    if (nl == std::string::npos) break;
+                    std::string line = rx_accum_.substr(start, nl - start);
+                    start = nl + 1;
+
+                    // Trim trailing CR
+                    if (!line.empty() && line.back() == '\r') line.pop_back();
+                    if (line.empty()) continue;
+
+                    // Ignore non-protocol lines (diagnostics/binary fragments).
+                    if (line[0] != '$') continue;
+
+                    // Guard against malformed extremely long lines.
+                    if (line.size() > 300) {
+                        ROS_WARN_THROTTLE(2.0, "[mega_bridge] dropping oversized frame (%zu bytes)", line.size());
+                        continue;
+                    }
+
+                    // Drop lines with obvious binary noise (except protocol punctuation).
+                    bool printable = true;
+                    for (unsigned char c : line) {
+                        if (!(std::isprint(c) || c == '\t')) {
+                            printable = false;
+                            break;
+                        }
+                    }
+                    if (!printable) continue;
+
+                    handleLine(line);
+                }
+
+                if (start > 0) {
+                    rx_accum_.erase(0, start);
+                }
             } catch (serial::SerialException& e) {
                 ROS_WARN("[mega_bridge] read error: %s", e.what());
                 ser_open_ = false;
@@ -741,6 +805,61 @@ private:
             imu.angular_velocity_covariance[0]    = -1;  // not available
             imu.linear_acceleration_covariance[0] = -1;  // not available
             pub_compass_imu_.publish(imu);
+        } else if (type == "GYRO") {
+            if (fields.size() >= 6) {
+                double roll = gyro_roll_deg_, pitch = gyro_pitch_deg_, yaw = gyro_yaw_deg_;
+                int gx = gyro_x_raw_, gy = gyro_y_raw_, gz = gyro_z_raw_;
+                if (!parseDoubleField(fields, 0, gyro_roll_deg_, roll) ||
+                    !parseDoubleField(fields, 1, gyro_pitch_deg_, pitch) ||
+                    !parseDoubleField(fields, 2, gyro_yaw_deg_, yaw)) {
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid GYRO angle fields");
+                }
+                if (!parseIntField(fields, 3, gyro_x_raw_, gx) ||
+                    !parseIntField(fields, 4, gyro_y_raw_, gy) ||
+                    !parseIntField(fields, 5, gyro_z_raw_, gz)) {
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid GYRO raw fields");
+                }
+                {
+                    std::lock_guard<std::mutex> lk(state_mutex_);
+                    gyro_roll_deg_ = roll;
+                    gyro_pitch_deg_ = pitch;
+                    gyro_yaw_deg_ = yaw;
+                    gyro_x_raw_ = gx;
+                    gyro_y_raw_ = gy;
+                    gyro_z_raw_ = gz;
+                }
+                constexpr double kPi = 3.14159265358979323846;
+                const double r = roll * kPi / 180.0;
+                const double p = pitch * kPi / 180.0;
+                const double y = yaw * kPi / 180.0;
+                const double cy = std::cos(y * 0.5);
+                const double sy = std::sin(y * 0.5);
+                const double cp = std::cos(p * 0.5);
+                const double sp = std::sin(p * 0.5);
+                const double cr = std::cos(r * 0.5);
+                const double sr = std::sin(r * 0.5);
+
+                sensor_msgs::Imu imu;
+                imu.header.stamp = ros::Time::now();
+                imu.header.frame_id = "base_link";
+                imu.orientation.w = cr * cp * cy + sr * sp * sy;
+                imu.orientation.x = sr * cp * cy - cr * sp * sy;
+                imu.orientation.y = cr * sp * cy + sr * cp * sy;
+                imu.orientation.z = cr * cp * sy - sr * sp * cy;
+                // MPU6050 default sensitivity ~131 LSB/(deg/s)
+                const double dps_to_rads = (kPi / 180.0) / 131.0;
+                imu.angular_velocity.x = static_cast<double>(gx) * dps_to_rads;
+                imu.angular_velocity.y = static_cast<double>(gy) * dps_to_rads;
+                imu.angular_velocity.z = static_cast<double>(gz) * dps_to_rads;
+                imu.orientation_covariance[0] = 0.08;
+                imu.orientation_covariance[4] = 0.08;
+                imu.orientation_covariance[8] = 0.12;
+                imu.angular_velocity_covariance[0] = 0.02;
+                imu.angular_velocity_covariance[4] = 0.02;
+                imu.angular_velocity_covariance[8] = 0.02;
+                imu.linear_acceleration_covariance[0] = -1;
+                pub_gyro_imu_.publish(imu);
+            }
 
         } else if (type == "CFG") {
             // fields[0] = key, fields[1] = value
