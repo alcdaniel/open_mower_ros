@@ -133,7 +133,8 @@ static bool parseDoubleField(const std::vector<std::string>& fields,
         return true;
     }
     const std::string& s = fields[idx];
-    if (s.empty() || s == "?" || s == "nan" || s == "NaN" || s == "NAN") {
+    if (s.empty() || s == "?" || s == "N/A" || s == "NA" ||
+        s == "nan" || s == "NaN" || s == "NAN") {
         out = fallback;
         return false;
     }
@@ -156,7 +157,8 @@ static bool parseIntField(const std::vector<std::string>& fields,
         return true;
     }
     const std::string& s = fields[idx];
-    if (s.empty() || s == "?" || s == "nan" || s == "NaN" || s == "NAN") {
+    if (s.empty() || s == "?" || s == "N/A" || s == "NA" ||
+        s == "nan" || s == "NaN" || s == "NAN") {
         out = fallback;
         return false;
     }
@@ -167,6 +169,11 @@ static bool parseIntField(const std::vector<std::string>& fields,
         out = fallback;
         return false;
     }
+}
+
+static bool isUnavailableToken(const std::string& s)
+{
+    return s == "?" || s == "N/A" || s == "NA" || s.empty();
 }
 
 // ── Bridge class ──────────────────────────────────────────────────────────────
@@ -235,6 +242,7 @@ public:
         pub_gyro_imu_ = nh.advertise<sensor_msgs::Imu>("mega/imu_gyro",    1);
         pub_cfg_        = nh.advertise<std_msgs::String>("mega/cfg",        10);
         pub_cfg_loaded_ = nh.advertise<std_msgs::Bool>  ("mega/cfg_loaded",  1);
+        pub_sstat_      = nh.advertise<std_msgs::String>("mega/sstat",      10);
         pub_connected_  = nh.advertise<std_msgs::Bool>("mega/connected", 1, true);
         pub_connection_status_ =
             nh.advertise<std_msgs::String>("mega/connection_status", 1, true);
@@ -316,7 +324,7 @@ private:
     ros::Publisher     pub_twist_, pub_esc_l_, pub_esc_r_;
     ros::Publisher     pub_sonar_[3], pub_bumper_, pub_rain_, pub_tilt_, pub_wire_;
     ros::Publisher     pub_compass_imu_, pub_gyro_imu_;
-    ros::Publisher     pub_cfg_, pub_cfg_loaded_;
+    ros::Publisher     pub_cfg_, pub_cfg_loaded_, pub_sstat_;
     ros::Publisher     pub_connected_, pub_connection_status_;
     ros::Subscriber    sub_cmd_vel_, sub_hl_, sub_cfgget_, sub_cfgset_;
     ros::ServiceServer srv_mow_, srv_em_;
@@ -610,8 +618,10 @@ private:
             {
                 std::lock_guard<std::mutex> lk(state_mutex_);
                 if (!parseDoubleField(fields, 0, volts_, volts_)) {
-                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid BATT field: '%s'",
-                                      fields.empty() ? "" : fields[0].c_str());
+                    if (!(fields.empty() || isUnavailableToken(fields[0]))) {
+                        ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid BATT field: '%s'",
+                                          fields[0].c_str());
+                    }
                 }
                 pm.battery_voltage_chg = static_cast<float>(volts_);
                 pm.charge_current      = static_cast<float>(charging_);
@@ -621,8 +631,10 @@ private:
         } else if (type == "AMPS") {
             std::lock_guard<std::mutex> lk(state_mutex_);
             if (!parseDoubleField(fields, 0, amps_, amps_)) {
-                ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid AMPS field: '%s'",
-                                  fields.empty() ? "" : fields[0].c_str());
+                if (!(fields.empty() || isUnavailableToken(fields[0]))) {
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid AMPS field: '%s'",
+                                      fields[0].c_str());
+                }
             }
 
         } else if (type == "WHEEL_AMPS") {
@@ -630,8 +642,10 @@ private:
             {
                 std::lock_guard<std::mutex> lk(state_mutex_);
                 if (!parseDoubleField(fields, 0, wheel_amps_, wheel_amps_)) {
-                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid WHEEL_AMPS field: '%s'",
-                                      fields.empty() ? "" : fields[0].c_str());
+                    if (!(fields.empty() || isUnavailableToken(fields[0]))) {
+                        ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid WHEEL_AMPS field: '%s'",
+                                          fields[0].c_str());
+                    }
                 }
                 auto s = (mega_state_ == "RUNNING")
                          ? mower_msgs::ESCStatus::ESC_STATUS_RUNNING
@@ -784,8 +798,10 @@ private:
         } else if (type == "COMPASS") {
             double deg = compass_deg_;
             if (!parseDoubleField(fields, 0, compass_deg_, deg)) {
-                ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid COMPASS field: '%s'",
-                                  fields.empty() ? "" : fields[0].c_str());
+                if (!(fields.empty() || isUnavailableToken(fields[0]))) {
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid COMPASS field: '%s'",
+                                      fields[0].c_str());
+                }
             }
             { std::lock_guard<std::mutex> lk(state_mutex_); compass_deg_ = deg; }
             // Publish as IMU (yaw only) — robot_localization / EKF can fuse this.
@@ -874,6 +890,13 @@ private:
             bm.data = true;
             pub_cfg_loaded_.publish(bm);
             ROS_INFO("[mega_bridge] settings dump complete");
+        } else if (type == "SSTAT") {
+            // SSTAT,<sensor>,<OK|NA>,<cause>
+            if (fields.size() >= 3) {
+                std_msgs::String sm;
+                sm.data = fields[0] + "," + fields[1] + "," + fields[2];
+                pub_sstat_.publish(sm);
+            }
 
         } else if (type == "ERR") {
             std::string msg;

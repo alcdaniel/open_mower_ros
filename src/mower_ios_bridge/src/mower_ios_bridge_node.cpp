@@ -174,6 +174,8 @@ struct StateSnapshot {
   double mega_gyro_rate_x = 0.0;
   double mega_gyro_rate_y = 0.0;
   double mega_gyro_rate_z = 0.0;
+  std::unordered_map<std::string, bool> sensor_available;
+  std::unordered_map<std::string, std::string> sensor_cause;
   std::unordered_map<std::string, std::string> mega_settings;
   bool mega_connected = false;
   std::string mega_connection_status = "Mega no conectado";
@@ -259,6 +261,7 @@ class MowerIosBridgeNode {
     sub_cfg_ = nh_.subscribe("/mega/cfg", 10, &MowerIosBridgeNode::cbCfg, this);
     sub_cfg_loaded_ =
         nh_.subscribe("/mega/cfg_loaded", 1, &MowerIosBridgeNode::cbCfgLoaded, this);
+    sub_sstat_ = nh_.subscribe("/mega/sstat", 10, &MowerIosBridgeNode::cbSStat, this);
     sub_mega_connected_ =
         nh_.subscribe("/mega/connected", 1, &MowerIosBridgeNode::cbMegaConnected, this);
     sub_mega_connection_status_ = nh_.subscribe(
@@ -361,6 +364,7 @@ class MowerIosBridgeNode {
   ros::Subscriber sub_gyro_imu_;
   ros::Subscriber sub_cfg_;
   ros::Subscriber sub_cfg_loaded_;
+  ros::Subscriber sub_sstat_;
   ros::Subscriber sub_mega_connected_;
   ros::Subscriber sub_mega_connection_status_;
   ros::Subscriber sub_json_map_;
@@ -515,6 +519,21 @@ class MowerIosBridgeNode {
   void cbCfgLoaded(const std_msgs::Bool::ConstPtr&) {
     StateSnapshot snap = snapshot();
     ROS_INFO("[ios_bridge] Mega settings loaded (%zu keys)", snap.mega_settings.size());
+  }
+
+  void cbSStat(const std_msgs::String::ConstPtr& msg) {
+    // format: sensor,state,cause
+    std::string s = msg->data;
+    size_t a = s.find(',');
+    if (a == std::string::npos) return;
+    size_t b = s.find(',', a + 1);
+    if (b == std::string::npos) return;
+    std::string sensor = s.substr(0, a);
+    std::string state = s.substr(a + 1, b - a - 1);
+    std::string cause = s.substr(b + 1);
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    state_.sensor_available[sensor] = (state == "OK");
+    state_.sensor_cause[sensor] = cause;
   }
 
   void cbJsonMap(const std_msgs::String::ConstPtr& msg) {
@@ -752,6 +771,11 @@ class MowerIosBridgeNode {
         (snap.sonar[1] < 999 && snap.sonar[1] < 30) ||
         (snap.sonar[2] < 999 && snap.sonar[2] < 30);
 
+    json sensorAvail = json::object();
+    json sensorCause = json::object();
+    for (const auto& kv : snap.sensor_available) sensorAvail[kv.first] = kv.second;
+    for (const auto& kv : snap.sensor_cause) sensorCause[kv.first] = kv.second;
+
     return json{
         {"loopCycle", static_cast<int>(std::time(nullptr) % 100000)},
         {"sonarCenterCm", snap.sonar[0]},
@@ -775,6 +799,8 @@ class MowerIosBridgeNode {
         {"megaGyroRateX", snap.mega_gyro_rate_x},
         {"megaGyroRateY", snap.mega_gyro_rate_y},
         {"megaGyroRateZ", snap.mega_gyro_rate_z},
+        {"sensorAvailable", sensorAvail},
+        {"sensorCause", sensorCause},
         {"magNow", 0},
         {"pwmLeft", pwm_left},
         {"pwmRight", pwm_right},
