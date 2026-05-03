@@ -100,6 +100,7 @@ configure_uart_for_mega_bridge() {
   fi
 
   local boot_cfg="/boot/firmware/config.txt"
+  local usercfg="/boot/firmware/usercfg.txt"
   local cmdline_cfg="/boot/firmware/cmdline.txt"
   local needs_reboot=0
 
@@ -117,6 +118,20 @@ configure_uart_for_mega_bridge() {
     fi
   else
     echo "Warning: ${boot_cfg} not found. Skipping enable_uart setting."
+  fi
+
+  # Keep Raspberry UART/Bluetooth routing stable for ttyAMA0 use.
+  if [[ -f "${usercfg}" ]]; then
+    if ! grep -qE '^[[:space:]]*enable_uart=1[[:space:]]*$' "${usercfg}"; then
+      echo "enable_uart=1" | sudo tee -a "${usercfg}" >/dev/null
+      needs_reboot=1
+    fi
+    if ! grep -qE '^[[:space:]]*dtoverlay=disable-bt[[:space:]]*$' "${usercfg}"; then
+      echo "dtoverlay=disable-bt" | sudo tee -a "${usercfg}" >/dev/null
+      needs_reboot=1
+    fi
+  else
+    echo "Warning: ${usercfg} not found. Skipping usercfg UART/Bluetooth overlay settings."
   fi
 
   # Remove serial console arguments that can still claim UART at boot.
@@ -144,6 +159,8 @@ configure_uart_for_mega_bridge() {
   # Ensure no login console grabs the UART.
   sudo systemctl disable --now serial-getty@ttyAMA0.service >/dev/null 2>&1 || true
   sudo systemctl disable --now serial-getty@ttyS0.service >/dev/null 2>&1 || true
+  sudo systemctl mask serial-getty@ttyAMA0.service >/dev/null 2>&1 || true
+  sudo systemctl mask serial-getty@ttyS0.service >/dev/null 2>&1 || true
 
   # Ensure current user can open serial devices without sudo.
   if id -nG "${USER}" | grep -qw dialout; then
@@ -451,6 +468,7 @@ if [[ "${SKIP_ROS_INSTALL}" -ne 1 ]]; then
   echo "Installing ROS ${ROS_DISTRO}..."
   sudo apt-get update
   ros_packages=(
+    "ros-${ROS_DISTRO}-rosbash"
     "ros-${ROS_DISTRO}-actionlib"
     "ros-${ROS_DISTRO}-catkin"
     "ros-${ROS_DISTRO}-costmap-2d"
