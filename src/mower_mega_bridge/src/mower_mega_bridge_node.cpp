@@ -204,7 +204,9 @@ public:
         offline_publish_hz_ = pnh.param<double>("offline_publish_hz", 1.0);
         rx_timeout_s_       = pnh.param<double>("rx_timeout_s", 3.0);
 
-        pub_emergency_ = nh.advertise<mower_msgs::Emergency>  ("ll/emergency",    1);
+        // Latched so late subscribers (e.g. mower_logic during startup) always
+        // receive an initial emergency state and do not block waiting forever.
+        pub_emergency_ = nh.advertise<mower_msgs::Emergency>  ("ll/emergency",    1, true);
         pub_status_    = nh.advertise<mower_msgs::Status>     ("ll/mower_status", 1);
         pub_power_     = nh.advertise<mower_msgs::Power>      ("ll/power",        1);
         pub_twist_     = nh.advertise<geometry_msgs::TwistStamped>(

@@ -716,69 +716,37 @@ int main(int argc, char** argv) {
   asyncSpinner.start();
 
   ros::Rate r(1.0);
+  // Start publishing high-level state early so UI/app can observe startup/degraded states.
+  ros::Timer ui_timer = n->createTimer(ros::Duration(1.0), updateUI);
 
-  ROS_INFO("Waiting for emergency message");
-  while (!emergency_state_subscriber.hasMessage()) {
-    if (!ros::ok()) {
-      delete (reconfigServer);
-      delete (mbfClient);
-      delete (mbfClientExePath);
-      return 1;
-    }
-    r.sleep();
-  }
-  ROS_INFO("Waiting for a power message");
-  while (!power_state_subscriber.hasMessage()) {
-    if (!ros::ok()) {
-      delete (reconfigServer);
-      delete (mbfClient);
-      delete (mbfClientExePath);
-      return 1;
-    }
-    r.sleep();
-  }
+  const ros::Duration initial_topic_wait(10.0);
+#define WAIT_FOR_STATE_OR_TIMEOUT(NAME, SUBSCRIBER)                                                         \
+  do {                                                                                                      \
+    ROS_INFO_STREAM("Waiting for " << NAME);                                                                \
+    const ros::Time start = ros::Time::now();                                                               \
+    while (!(SUBSCRIBER).hasMessage()) {                                                                    \
+      if (!ros::ok()) {                                                                                     \
+        delete (reconfigServer);                                                                            \
+        delete (mbfClient);                                                                                 \
+        delete (mbfClientExePath);                                                                          \
+        return 1;                                                                                           \
+      }                                                                                                     \
+      if ((ros::Time::now() - start) > initial_topic_wait) {                                               \
+        ROS_WARN_STREAM("Timeout waiting for " << NAME << ". Continuing with defaults/degraded mode.");    \
+        break;                                                                                              \
+      }                                                                                                     \
+      r.sleep();                                                                                            \
+    }                                                                                                       \
+  } while (0)
 
-  ROS_INFO("Waiting for a status message");
-  while (!status_state_subscriber.hasMessage()) {
-    if (!ros::ok()) {
-      delete (reconfigServer);
-      delete (mbfClient);
-      delete (mbfClientExePath);
-      return 1;
-    }
-    r.sleep();
-  }
+  WAIT_FOR_STATE_OR_TIMEOUT("emergency message", emergency_state_subscriber);
+  WAIT_FOR_STATE_OR_TIMEOUT("a power message", power_state_subscriber);
+  WAIT_FOR_STATE_OR_TIMEOUT("a status message", status_state_subscriber);
+  WAIT_FOR_STATE_OR_TIMEOUT("a pose message", pose_state_subscriber);
+  WAIT_FOR_STATE_OR_TIMEOUT("left ESC status message", left_esc_status_state_subscriber);
+  WAIT_FOR_STATE_OR_TIMEOUT("right ESC status message", right_esc_status_state_subscriber);
 
-  ROS_INFO("Waiting for a pose message");
-  while (!pose_state_subscriber.hasMessage()) {
-    if (!ros::ok()) {
-      delete (reconfigServer);
-      delete (mbfClient);
-      delete (mbfClientExePath);
-      return 1;
-    }
-    r.sleep();
-  }
-  ROS_INFO("Waiting for left ESC status message");
-  while (!left_esc_status_state_subscriber.hasMessage()) {
-    if (!ros::ok()) {
-      delete (reconfigServer);
-      delete (mbfClient);
-      delete (mbfClientExePath);
-      return 1;
-    }
-    r.sleep();
-  }
-  ROS_INFO("Waiting for right ESC status message");
-  while (!right_esc_status_state_subscriber.hasMessage()) {
-    if (!ros::ok()) {
-      delete (reconfigServer);
-      delete (mbfClient);
-      delete (mbfClientExePath);
-      return 1;
-    }
-    r.sleep();
-  }
+#undef WAIT_FOR_STATE_OR_TIMEOUT
 
   ROS_INFO("Waiting for emergency service");
   if (!emergencyClient.waitForExistence(ros::Duration(60.0, 0.0))) {
@@ -889,7 +857,6 @@ int main(int argc, char** argv) {
 
   rain_resume = last_rain_check = last_v_battery_check = ros::Time::now();
   ros::Timer safety_timer = n->createTimer(ros::Duration(0.5), checkSafety);
-  ros::Timer ui_timer = n->createTimer(ros::Duration(1.0), updateUI);
 
   // release emergency if it was set
   setEmergencyMode(false);
