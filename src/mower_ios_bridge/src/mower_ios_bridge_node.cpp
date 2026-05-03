@@ -773,8 +773,80 @@ class MowerIosBridgeNode {
 
     json sensorAvail = json::object();
     json sensorCause = json::object();
+    // Copy explicit values from /mega/sensor_status topic
     for (const auto& kv : snap.sensor_available) sensorAvail[kv.first] = kv.second;
     for (const auto& kv : snap.sensor_cause) sensorCause[kv.first] = kv.second;
+
+    // Derive availability from last_seen timestamps and mega settings
+    const double now = wallNowSec();
+    constexpr double stale_s = 10.0;
+
+    auto megaOn = [&](const std::string& key) -> int {
+      // returns 1=on, 0=off, -1=unknown
+      auto it = snap.mega_settings.find(key);
+      if (it == snap.mega_settings.end()) return -1;
+      try { return std::stof(it->second) >= 0.5f ? 1 : 0; }
+      catch (...) { return -1; }
+    };
+
+    auto markUnavailable = [&](const std::string& sensor, const std::string& cause) {
+      if (sensorAvail.find(sensor) == sensorAvail.end()) {
+        sensorAvail[sensor] = false;
+        sensorCause[sensor] = cause;
+      }
+    };
+
+    // Battery: power topic must be alive
+    if (!snap.has_power || (now - snap.power_seen) > stale_s)
+      markUnavailable("BATT", "NO_CONN");
+
+    // GPS: pose topic
+    if (!snap.has_pose || (now - snap.pose_seen) > stale_s)
+      markUnavailable("GPS", "NO_CONN");
+
+    // Compass
+    if (megaOn("compassOn") == 0)
+      markUnavailable("COMPASS", "DISABLED");
+    else if (megaOn("compassOn") == 1 && !snap.mega_connected)
+      markUnavailable("COMPASS", "NO_CONN");
+
+    // Gyroscope
+    if (megaOn("gyroOn") == 0)
+      markUnavailable("GYRO", "DISABLED");
+
+    // Sonar
+    if (megaOn("sonar1On") == 0 && megaOn("sonar2On") == 0 && megaOn("sonar3On") == 0)
+      markUnavailable("SONAR", "DISABLED");
+    else if (snap.sonar[0] >= 999 && snap.sonar[1] >= 999 && snap.sonar[2] >= 999 && !snap.mega_connected)
+      markUnavailable("SONAR", "NO_CONN");
+
+    // Bumper
+    if (megaOn("bumperOn") == 0)
+      markUnavailable("BUMPER", "DISABLED");
+
+    // Rain
+    if (megaOn("rainOn") == 0)
+      markUnavailable("RAIN", "DISABLED");
+
+    // Tilt
+    if (megaOn("tiltOn") == 0)
+      markUnavailable("TILT", "DISABLED");
+
+    // Wire
+    if (megaOn("wireOn") == 0)
+      markUnavailable("WIRE", "DISABLED");
+
+    // Wheel current
+    if (megaOn("wheelAmpOn") == 0)
+      markUnavailable("WHEEL_AMPS", "DISABLED");
+
+    // Blade
+    if (megaOn("bladeOn") == 0)
+      markUnavailable("BLADE", "DISABLED");
+
+    // Charge station
+    if (megaOn("chargeStOn") == 0)
+      markUnavailable("CHARGE", "DISABLED");
 
     return json{
         {"loopCycle", static_cast<int>(std::time(nullptr) % 100000)},

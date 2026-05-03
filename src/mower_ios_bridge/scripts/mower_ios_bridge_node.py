@@ -475,6 +475,97 @@ class IOSBridge:
         bumper = snap.get("bumper", False)
         tilt   = snap.get("tilt", False)
 
+        # Sensor availability based on last_seen timestamps and mega settings
+        last_seen = snap.get("last_seen", {})
+        ms = snap.get("mega_settings", {})
+        now = time.time()
+        stale_s = 10.0  # seconds without update = unavailable
+
+        def topic_alive(key):
+            return (now - last_seen.get(key, 0)) < stale_s if key in last_seen else False
+
+        def mega_on(key):
+            v = ms.get(key)
+            if v is None:
+                return None  # unknown (settings not loaded yet)
+            try:
+                return float(v) >= 0.5
+            except (ValueError, TypeError):
+                return None
+
+        sensor_available = {}
+        sensor_cause = {}
+
+        # Battery: power topic must be alive
+        if not topic_alive("power"):
+            sensor_available["BATT"] = False
+            sensor_cause["BATT"] = "NO_CONN"
+
+        # GPS: pose topic
+        if not topic_alive("pose"):
+            sensor_available["GPS"] = False
+            sensor_cause["GPS"] = "NO_CONN"
+
+        # Compass: mega setting compassOn + imu topic
+        compass_on = mega_on("compassOn")
+        if compass_on is False:
+            sensor_available["COMPASS"] = False
+            sensor_cause["COMPASS"] = "DISABLED"
+        elif compass_on is True and snap.get("mega_compass_deg", 0.0) == 0.0 and not snap.get("mega_connected", False):
+            sensor_available["COMPASS"] = False
+            sensor_cause["COMPASS"] = "NO_CONN"
+
+        # Gyroscope
+        gyro_on = mega_on("gyroOn")
+        if gyro_on is False:
+            sensor_available["GYRO"] = False
+            sensor_cause["GYRO"] = "DISABLED"
+
+        # Sonar
+        sonar_any_on = any(mega_on(f"sonar{i}On") is not False for i in [1, 2, 3])
+        if not sonar_any_on:
+            sensor_available["SONAR"] = False
+            sensor_cause["SONAR"] = "DISABLED"
+        elif all(s >= 999 for s in sonar) and not snap.get("mega_connected", False):
+            sensor_available["SONAR"] = False
+            sensor_cause["SONAR"] = "NO_CONN"
+
+        # Bumper
+        if mega_on("bumperOn") is False:
+            sensor_available["BUMPER"] = False
+            sensor_cause["BUMPER"] = "DISABLED"
+
+        # Rain
+        if mega_on("rainOn") is False:
+            sensor_available["RAIN"] = False
+            sensor_cause["RAIN"] = "DISABLED"
+
+        # Tilt / tip
+        if mega_on("tiltOn") is False:
+            sensor_available["TILT"] = False
+            sensor_cause["TILT"] = "DISABLED"
+
+        # Perimeter wire
+        if mega_on("wireOn") is False:
+            sensor_available["WIRE"] = False
+            sensor_cause["WIRE"] = "DISABLED"
+
+        # Wheel current sensor
+        if mega_on("wheelAmpOn") is False:
+            sensor_available["WHEEL_AMPS"] = False
+            sensor_cause["WHEEL_AMPS"] = "DISABLED"
+
+        # Blade
+        blade_on = mega_on("bladeOn")
+        if blade_on is False:
+            sensor_available["BLADE"] = False
+            sensor_cause["BLADE"] = "DISABLED"
+
+        # Charge station
+        if mega_on("chargeStOn") is False:
+            sensor_available["CHARGE"] = False
+            sensor_cause["CHARGE"] = "DISABLED"
+
         return {
             "loopCycle": int(time.time()) % 100000,
             "sonarCenterCm": sonar[0],
@@ -499,6 +590,8 @@ class IOSBridge:
             "turnPhase": 0,
             "sonarPhase": 0,
             "wheelStatusValue": wheel_status,
+            "sensorAvailable": sensor_available,
+            "sensorCause": sensor_cause,
         }
 
     def settings_payload(self):
