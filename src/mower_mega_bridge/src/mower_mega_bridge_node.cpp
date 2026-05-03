@@ -903,7 +903,7 @@ private:
         } else if (type == "ERR") {
             std::string msg;
             for (const auto& f : fields) msg += f + ' ';
-            ROS_WARN("[mega_bridge] Mega error: %s", msg.c_str());
+            ROS_WARN_THROTTLE(5, "[mega_bridge] Mega error: %s", msg.c_str());
         }
     }
 

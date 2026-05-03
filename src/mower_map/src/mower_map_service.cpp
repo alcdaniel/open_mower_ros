@@ -551,11 +551,11 @@ bool addMowingArea(mower_map::AddMowingAreaSrvRequest& req, mower_map::AddMowing
 }
 
 bool getMowingArea(mower_map::GetMowingAreaSrvRequest& req, mower_map::GetMowingAreaSrvResponse& res) {
-  ROS_INFO_STREAM("Got getMowingArea call with index: " << req.index);
+  ROS_INFO_STREAM_THROTTLE(5, "Got getMowingArea call with index: " << req.index);
 
   auto mowing_areas = map_data.getMowingAreas();
   if (req.index >= mowing_areas.size()) {
-    ROS_ERROR_STREAM("No mowing area with index: " << req.index);
+    ROS_WARN_STREAM_THROTTLE(5, "No mowing area with index: " << req.index);
     return false;
   }
 
@@ -593,7 +593,7 @@ bool setDockingPoint(mower_map::SetDockingPointSrvRequest& req, mower_map::SetDo
 }
 
 bool getDockingPoint(mower_map::GetDockingPointSrvRequest& req, mower_map::GetDockingPointSrvResponse& res) {
-  ROS_INFO_STREAM("Getting Docking Point");
+  ROS_INFO_STREAM_THROTTLE(5, "Getting Docking Point");
 
   if (map_data.docking_stations.empty()) {
     return false;
