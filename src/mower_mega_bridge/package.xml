@@ -13,6 +13,7 @@
 
   <build_depend>roscpp</build_depend>
   <build_depend>geometry_msgs</build_depend>
+  <build_depend>nav_msgs</build_depend>
   <build_depend>sensor_msgs</build_depend>
   <build_depend>std_msgs</build_depend>
   <build_depend>mower_msgs</build_depend>
@@ -20,8 +21,10 @@
 
   <exec_depend>roscpp</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>std_msgs</exec_depend>
   <exec_depend>mower_msgs</exec_depend>
   <exec_depend>serial</exec_depend>
+  <exec_depend>robot_localization</exec_depend>
 </package>

@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<!--
+  Localization stack for IMU-based dead-reckoning mower with GPS correction.
+
+  Two EKFs (standard robot_localization pattern):
+    - ekf_local:  fuses /odom + /mega/imu_gyro  → /odometry/filtered (odom→base_link)
+    - ekf_global: fuses /odom + /mega/imu_gyro + /odometry/gps → /odometry/filtered_map (map→odom)
+
+  navsat_transform_node converts /fix (NavSatFix) to /odometry/gps in map frame.
+
+  Required topics (must already exist):
+    /odom               from mower_mega_bridge_node
+    /mega/imu_gyro      from mower_mega_bridge_node
+    /fix                from your GPS driver (e.g. nmea_navsat_driver, ublox_gps)
+
+  Outputs for Nav2:
+    /odometry/filtered      (used by local planner)
+    /odometry/filtered_map  (used by global planner)
+    map → odom → base_link  TF tree
+-->
+<launch>
+  <arg name="gps_topic" default="/fix"/>
+
+  <!-- LOCAL EKF: smooth short-term pose for local planner -->
+  <node pkg="robot_localization" type="ekf_localization_node" name="ekf_local" clear_params="true">
+    <rosparam command="load" file="$(find mower_mega_bridge)/config/ekf_local.yaml"/>
+    <remap from="odometry/filtered" to="/odometry/filtered"/>
+  </node>
+
+  <!-- GLOBAL EKF: GPS-corrected pose for global planner -->
+  <node pkg="robot_localization" type="ekf_localization_node" name="ekf_global" clear_params="true">
+    <rosparam command="load" file="$(find mower_mega_bridge)/config/ekf_global.yaml"/>
+    <remap from="odometry/filtered" to="/odometry/filtered_map"/>
+  </node>
+
+  <!-- GPS → map frame transformer -->
+  <node pkg="robot_localization" type="navsat_transform_node" name="navsat_transform" clear_params="true">
+    <param name="frequency" value="30.0"/>
+    <param name="delay" value="3.0"/>
+    <param name="magnetic_declination_radians" value="0.0"/>
+    <param name="yaw_offset" value="0.0"/>
+    <param name="zero_altitude" value="true"/>
+    <param name="broadcast_utm_transform" value="false"/>
+    <param name="publish_filtered_gps" value="true"/>
+    <param name="use_odometry_yaw" value="false"/>
+    <param name="wait_for_datum" value="false"/>
+
+    <remap from="/imu/data" to="/mega/imu_gyro"/>
+    <remap from="/gps/fix" to="$(arg gps_topic)"/>
+    <remap from="/odometry/filtered" to="/odometry/filtered_map"/>
+    <remap from="/odometry/gps" to="/odometry/gps"/>
+  </node>
+</launch>

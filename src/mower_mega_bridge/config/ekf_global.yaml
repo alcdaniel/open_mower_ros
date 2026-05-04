@@ -1,0 +1,63 @@
+# EKF for global pose fusion: /odom + /mega/imu_gyro + GPS (via navsat_transform_node)
+# Outputs: /odometry/filtered_map (map -> odom transform)
+# Used by Nav2 for global path planning with GPS-corrected pose
+
+frequency: 30.0
+sensor_timeout: 0.2
+two_d_mode: true
+publish_tf: true
+
+map_frame: map
+odom_frame: odom
+base_link_frame: base_link
+world_frame: map
+
+# /odom from Mega bridge — same config as local but world_frame=map
+odom0: /odom
+odom0_config: [false, false, false,
+               false, false, false,
+               true,  false, false,
+               false, false, true,
+               false, false, false]
+odom0_differential: false
+odom0_relative: false
+odom0_queue_size: 10
+
+# IMU from Mega
+imu0: /mega/imu_gyro
+imu0_config: [false, false, false,
+              true,  true,  true,
+              false, false, false,
+              true,  true,  true,
+              false, false, false]
+imu0_differential: false
+imu0_relative: false
+imu0_queue_size: 10
+imu0_remove_gravitational_acceleration: true
+
+# GPS pose (after navsat_transform_node converts /fix → /odometry/gps)
+odom1: /odometry/gps
+odom1_config: [true,  true,  false,
+               false, false, false,
+               false, false, false,
+               false, false, false,
+               false, false, false]
+odom1_differential: false
+odom1_relative: false
+odom1_queue_size: 10
+
+process_noise_covariance: [0.05, 0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0.05, 0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0.06, 0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0.03, 0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0.03, 0,    0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0.06, 0,     0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0.025, 0,     0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0.025, 0,    0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0.04, 0,    0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0.01, 0,    0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0.01, 0,    0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0.02, 0,    0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0.01, 0,    0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0.01, 0,
+                           0,    0,    0,    0,    0,    0,    0,     0,     0,    0,    0,    0,    0,    0,    0.015]

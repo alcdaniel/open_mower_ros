@@ -61,6 +61,7 @@
 
 #include <geometry_msgs/Twist.h>
 #include <geometry_msgs/TwistStamped.h>
+#include <nav_msgs/Odometry.h>
 #include <mower_msgs/Emergency.h>
 #include <mower_msgs/ESCStatus.h>
 #include <mower_msgs/HighLevelStatus.h>
@@ -213,7 +214,7 @@ public:
 
         port_       = pnh.param<std::string>("port", "/dev/ttyAMA0");
         baud_       = pnh.param<int>("baud", 57600);
-        wheel_dist_ = pnh.param<double>("wheel_distance_m", 0.325);
+        wheel_dist_ = pnh.param<double>("wheel_distance_m", 0.40);
         max_pwm_    = pnh.param<int>("max_pwm", 255);
         hb_hz_      = pnh.param<double>("heartbeat_hz", 3.0);
         offline_publish_hz_ = pnh.param<double>("offline_publish_hz", 1.0);
@@ -246,13 +247,21 @@ public:
         pub_connected_  = nh.advertise<std_msgs::Bool>("mega/connected", 1, true);
         pub_connection_status_ =
             nh.advertise<std_msgs::String>("mega/connection_status", 1, true);
+        pub_odom_       = nh.advertise<nav_msgs::Odometry>("odom", 10);
 
         sub_cfgget_ = nh.subscribe("mega/cfgget", 1, &MegaBridge::cbCfgGet, this);
         sub_cfgset_ = nh.subscribe("mega/cfgset", 1, &MegaBridge::cbCfgSet, this);
 
+        // Nav2 autonomous command (mode=0: pure pursuit, no heading loop)
         sub_cmd_vel_ = nh.subscribe("ll/cmd_vel", 1,
-                           &MegaBridge::cbCmdVel, this,
+                           &MegaBridge::cbCmdVelNav2, this,
                            ros::TransportHints().tcpNoDelay());
+
+        // Manual/teleop command (mode=1: with heading correction)
+        sub_manual_cmd_vel_ = nh.subscribe("ll/manual_cmd_vel", 1,
+                           &MegaBridge::cbCmdVelManual, this,
+                           ros::TransportHints().tcpNoDelay());
+
         sub_hl_      = nh.subscribe("/mower_logic/current_state", 1,
                            &MegaBridge::cbHighLevel, this);
 
@@ -326,7 +335,8 @@ private:
     ros::Publisher     pub_compass_imu_, pub_gyro_imu_;
     ros::Publisher     pub_cfg_, pub_cfg_loaded_, pub_sstat_;
     ros::Publisher     pub_connected_, pub_connection_status_;
-    ros::Subscriber    sub_cmd_vel_, sub_hl_, sub_cfgget_, sub_cfgset_;
+    ros::Publisher     pub_odom_;  // Odometry feedback
+    ros::Subscriber    sub_cmd_vel_, sub_manual_cmd_vel_, sub_hl_, sub_cfgget_, sub_cfgset_;
     ros::ServiceServer srv_mow_, srv_em_;
     ros::Timer         status_timer_;
 
@@ -900,6 +910,69 @@ private:
                 pub_sstat_.publish(sm);
             }
 
+        } else if (type == "ACK") {
+            // Command acknowledgment: ACK,CMD_TYPE,seq
+            if (!fields.empty()) {
+                std::string cmd_type = fields[0];
+                ROS_DEBUG_THROTTLE(1, "[mega_bridge] ACK received for: %s", cmd_type.c_str());
+            }
+
+        } else if (type == "ODOM") {
+            // Odometry feedback: ODOM,x,y,theta,vx,wz
+            if (fields.size() >= 6) {
+                nav_msgs::Odometry odom;
+                odom.header.stamp = ros::Time::now();
+                odom.header.frame_id = "odom";
+                odom.child_frame_id = "base_link";
+
+                double x, y, theta, vx, wz;
+                if (!parseDoubleField(fields, 0, 0.0, x) ||
+                    !parseDoubleField(fields, 1, 0.0, y) ||
+                    !parseDoubleField(fields, 2, 0.0, theta) ||
+                    !parseDoubleField(fields, 3, 0.0, vx) ||
+                    !parseDoubleField(fields, 4, 0.0, wz)) {
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid ODOM fields");
+                }
+
+                // Convert theta from degrees to radians
+                const double pi = 3.14159265358979323846;
+                double theta_rad = theta * pi / 180.0;
+
+                // Position
+                odom.pose.pose.position.x = x;
+                odom.pose.pose.position.y = y;
+                odom.pose.pose.position.z = 0.0;
+
+                // Orientation (quaternion from yaw)
+                double cy = std::cos(theta_rad * 0.5);
+                double sy = std::sin(theta_rad * 0.5);
+                odom.pose.pose.orientation.x = 0.0;
+                odom.pose.pose.orientation.y = 0.0;
+                odom.pose.pose.orientation.z = sy;
+                odom.pose.pose.orientation.w = cy;
+
+                // Velocity
+                odom.twist.twist.linear.x = vx;
+                odom.twist.twist.linear.y = 0.0;
+                odom.twist.twist.angular.z = wz;
+
+                // Covariances tuned for IMU-based dead reckoning (no encoders)
+                // Position drifts significantly without encoder feedback;
+                // robot_localization should weight GPS more than odom for x,y.
+                // Theta is more reliable (from IMU/compass), keep low variance.
+                odom.pose.covariance[0]  = 1.0;   // x variance (high - drifts)
+                odom.pose.covariance[7]  = 1.0;   // y variance (high - drifts)
+                odom.pose.covariance[14] = 1e6;   // z (unused 2D)
+                odom.pose.covariance[21] = 1e6;   // roll
+                odom.pose.covariance[28] = 1e6;   // pitch
+                odom.pose.covariance[35] = 0.05;  // theta variance (low - IMU good)
+                odom.twist.covariance[0]  = 0.10; // vx variance (commanded ≈ actual)
+                odom.twist.covariance[7]  = 1e6;  // vy (no slip assumed)
+                odom.twist.covariance[35] = 0.05; // wz variance
+
+                pub_odom_.publish(odom);
+            }
+
         } else if (type == "ERR") {
             std::string msg;
             for (const auto& f : fields) msg += f + ' ';
@@ -922,18 +995,47 @@ private:
 
     // ── ROS callbacks ─────────────────────────────────────────────────────────
 
-    void cbCmdVel(const geometry_msgs::Twist::ConstPtr& twist)
+    void sendMOVCommand(const geometry_msgs::Twist::ConstPtr& twist, int mode)
     {
         if (emergency_ || local_avoid_) return;
 
-        double vx = twist->linear.x;
-        double wz = twist->angular.z;
-        double sr = std::max(-1.0, std::min(1.0, vx + 0.5 * wheel_dist_ * wz));
-        double sl = std::max(-1.0, std::min(1.0, vx - 0.5 * wheel_dist_ * wz));
+        // Convert ROS Twist to movement parameters
+        double vx = twist->linear.x;           // m/s
+        double wz = twist->angular.z;          // rad/s
 
-        send("CMD", {"NAV",
-                     std::to_string(static_cast<int>(sl * max_pwm_)),
-                     std::to_string(static_cast<int>(sr * max_pwm_))});
+        // Convert to Mega units
+        double vx_mm_s = vx * 1000.0;          // m/s to mm/s
+        double wz_deg_s = wz * 180.0 / M_PI;   // rad/s to deg/s
+
+        // Clamp to valid ranges
+        vx_mm_s = std::max(-1000.0, std::min(1000.0, vx_mm_s));
+        wz_deg_s = std::max(-180.0, std::min(180.0, wz_deg_s));
+
+        // Format as strings with 1 decimal place
+        std::ostringstream vx_stream, wz_stream, mode_stream;
+        vx_stream << std::fixed << std::setprecision(1) << vx_mm_s;
+        wz_stream << std::fixed << std::setprecision(1) << wz_deg_s;
+        mode_stream << mode;
+
+        // Send MOV command: vx,wz,mode,seq
+        // mode: 0 = Nav2/pure pursuit (no heading loop)
+        //       1 = manual/teleop (with heading correction)
+        send("CMD", {"MOV",
+                     vx_stream.str(),
+                     wz_stream.str(),
+                     mode_stream.str()});
+    }
+
+    void cbCmdVelNav2(const geometry_msgs::Twist::ConstPtr& twist)
+    {
+        // Nav2 autonomous: mode=0 (pure pursuit, no Mega heading correction)
+        sendMOVCommand(twist, 0);
+    }
+
+    void cbCmdVelManual(const geometry_msgs::Twist::ConstPtr& twist)
+    {
+        // Manual/teleop: mode=1 (with Mega heading correction)
+        sendMOVCommand(twist, 1);
     }
 
     void cbHighLevel(const mower_msgs::HighLevelStatus::ConstPtr&) {}
