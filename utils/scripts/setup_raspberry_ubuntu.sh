@@ -331,7 +331,9 @@ install_wifi_service() {
   chmod +x "${wifi_script}"
 
   echo "Installing openmower-wifi systemd service..."
-  sudo tee "${service_path}" >/dev/null <<EOF
+
+  # Create service with absolute path expansion
+  sudo bash -c "cat > '${service_path}' << 'WIFI_SERVICE_EOF'
 [Unit]
 Description=OpenMower Wi-Fi auto-connect from ${ENV_FILE}
 After=NetworkManager.service
@@ -343,13 +345,28 @@ WorkingDirectory=${REPO_ROOT}
 Environment=MOWER_ENV_FILE=${ENV_FILE}
 ExecStart=${wifi_script}
 RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
-EOF
+WIFI_SERVICE_EOF
+"
 
   sudo systemctl daemon-reload
-  sudo systemctl enable openmower-wifi.service
+  if sudo systemctl enable openmower-wifi.service; then
+    echo "✓ WiFi service enabled for auto-start"
+  else
+    echo "✗ Failed to enable WiFi service" >&2
+    return 1
+  fi
+
+  # Verify service is installed
+  if sudo systemctl is-enabled openmower-wifi.service >/dev/null 2>&1; then
+    echo "✓ Service verified as enabled"
+  else
+    echo "⚠ Warning: Service may not be properly installed" >&2
+  fi
 }
 
 setup_shell_env() {

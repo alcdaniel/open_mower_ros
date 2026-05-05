@@ -1,63 +1,96 @@
-# WiFi Auto-Connect: Manual Usage
+# WiFi Auto-Connect Guide
 
-Script: `connect_wifi_from_env.sh` y servicio: `openmower-wifi.service`
+Conecta Raspberry automáticamente en boot (sin relanzar setup).
 
-Sin necesidad de relanzar `setup_raspberry_ubuntu.sh`.
+Scripts:
+- `connect_wifi_from_env.sh` — Conecta WiFi desde `.env`
+- `install_wifi_service.sh` — Instala servicio systemd (sin relanzar setup)
+- `setup_raspberry_ubuntu.sh` — Setup completo (instala todo)
 
 ---
 
-## Setup Inicial (primera vez)
+## Opción A: Setup Completo (primera vez)
 
 ```bash
 cd ~/open_mower_ros
 bash ./utils/scripts/setup_raspberry_ubuntu.sh
 ```
 
-Crea:
-- `~/.env` con plantilla (edita con tus credenciales)
+Instala automáticamente:
+- `.env` con plantilla
 - Servicio systemd `openmower-wifi.service`
 
 ---
 
-## Uso Manual (desde terminal)
+## Opción B: Solo Instalar Servicio WiFi (sin relanzar setup)
+
+Si ya ejecutaste setup o solo quieres instalar el servicio:
+
+```bash
+bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh
+```
+
+O con sudo si es necesario:
+
+```bash
+sudo bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh
+```
+
+---
+
+## Usar (sin relanzar nada)
 
 ### 1. Editar credenciales
 
 ```bash
-nano ~/.env
+nano ~/open_mower_ros/.env
 ```
 
-Asegúrate de tener:
+Verifica que tenga:
 ```env
 MOWER_WIFI_SSID="tu-red-wifi"
 MOWER_WIFI_PASSWORD="tu-contraseña"
 MOWER_WIFI_CONNECTION_NAME="openmower-wifi"
 ```
 
-### 2. Conectar ahora (sin esperar reboot)
+### 2. Conectar ahora
 
-**Opción A: Ejecutar script directamente**
+**Opción A: Script directo**
 ```bash
 bash ~/open_mower_ros/utils/scripts/connect_wifi_from_env.sh
 ```
 
-**Opción B: Usar servicio systemd**
+**Opción B: Servicio systemd**
 ```bash
 sudo systemctl restart openmower-wifi.service
 ```
 
-### 3. Verificar conexión
+### 3. Verificar
 
 ```bash
-# Estado del servicio
+# Estado
 sudo systemctl status openmower-wifi.service
 
-# Ver logs
+# Logs en vivo
 sudo journalctl -u openmower-wifi.service -f
 
-# Verificar WiFi actual
-nmcli connection show --active
-ip addr show
+# IP actual
+hostname -I
+
+# Test internet
+ping 8.8.8.8
+```
+
+---
+
+## Verificar Servicio Instalado
+
+```bash
+# Debe mostrar "enabled"
+sudo systemctl is-enabled openmower-wifi.service
+
+# Si no está instalado:
+bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh
 ```
 
 ---
@@ -66,20 +99,10 @@ ip addr show
 
 | Problema | Solución |
 |----------|----------|
-| "No .env file found" | `cat > ~/.env` con credenciales (ver arriba) |
-| Servicio falla | Ver logs: `journalctl -u openmower-wifi.service -n 50` |
-| No conecta | Check SSID/password en `~/.env`, verifca red visible: `nmcli dev wifi list` |
-| Permission denied | Ejecuta con `sudo bash connect_wifi_from_env.sh` o usa servicio |
-
----
-
-## Variables en .env
-
-| Variable | Descripción |
-|----------|------------|
-| `MOWER_WIFI_SSID` | Nombre red WiFi |
-| `MOWER_WIFI_PASSWORD` | Contraseña WiFi |
-| `MOWER_WIFI_CONNECTION_NAME` | Nombre conexión (default: `openmower-wifi`) |
+| `.env` not found | Crea en `~/open_mower_ros/.env` (no en `~/`) |
+| Service not found | `bash install_wifi_service.sh` |
+| No conecta | Check SSID/password, ver logs: `journalctl -u openmower-wifi.service -n 50` |
+| Redes visibles | `nmcli dev wifi list` |
 
 ---
 
@@ -92,26 +115,28 @@ nmcli dev wifi list
 # Ver conexiones guardadas
 nmcli connection show
 
-# Eliminar conexión
+# Eliminar conexión guardada
 sudo nmcli connection delete openmower-wifi
 
-# Resetear servicio WiFi
-sudo systemctl stop openmower-wifi.service
-sudo systemctl start openmower-wifi.service
+# Resetear servicio
+sudo systemctl restart openmower-wifi.service
 
-# Ver IP asignada
+# Ver logs
+tail -f /var/log/openmower-wifi.log
+
+# Ver IP
 hostname -I
-
-# Test internet
-ping 8.8.8.8
 ```
 
 ---
 
-## Archivo de logs
+## Boot Automático
 
-Cada ejecución se loguea en:
-```bash
-/var/log/openmower-wifi.log
-tail -f /var/log/openmower-wifi.log
-```
+Una vez que servicio está `enabled`:
+
+1. **Reboot**: Systemd ejecuta `openmower-wifi.service`
+2. **Script corre**: Lee `.env`, configura conexión WiFi
+3. **NetworkManager**: Conecta automáticamente
+4. **IP recibida**: Listo para usar
+
+✓ Persistente. Sin intervención manual.

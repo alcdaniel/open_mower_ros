@@ -1088,8 +1088,21 @@ private:
     void heartbeatLoop()
     {
         ros::Rate rate(hb_hz_);
+        uint64_t last_im_alive_ms = 0;
+        const uint64_t IM_ALIVE_PERIOD_MS = 10000u;  // 10 seconds, matches Mega timeout
+
         while (ros::ok()) {
+            // Send regular heartbeat (HB)
             send("HB", {"RPI"});
+
+            // Send IM_ALIVE every 10s to prove Raspberry Pi is alive
+            // Mega expects IM_ALIVE within 25s or it stops sending telemetry
+            uint64_t now_ms = static_cast<uint64_t>(ros::Time::now().toSec() * 1000.0);
+            if (last_im_alive_ms == 0 || (now_ms - last_im_alive_ms >= IM_ALIVE_PERIOD_MS)) {
+                send("IM_ALIVE", {"RPI"});
+                last_im_alive_ms = now_ms;
+            }
+
             rate.sleep();
         }
     }
