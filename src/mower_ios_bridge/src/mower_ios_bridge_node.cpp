@@ -11,6 +11,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -98,6 +99,20 @@ std::string jsonString(const json& value) {
   return value.dump(-1, ' ', false, json::error_handler_t::replace);
 }
 
+std::vector<std::string> splitCsv(const std::string& input) {
+  std::vector<std::string> out;
+  std::string item;
+  std::stringstream ss(input);
+  while (std::getline(ss, item, ',')) {
+    std::string trimmed;
+    for (char c : item) {
+      if (!std::isspace(static_cast<unsigned char>(c))) trimmed.push_back(c);
+    }
+    if (!trimmed.empty()) out.push_back(trimmed);
+  }
+  return out;
+}
+
 struct PointXY {
   double x = 0.0;
   double y = 0.0;
@@ -164,6 +179,8 @@ struct StateSnapshot {
 
   std::array<int, 3> sonar{{999, 999, 999}};
   bool bumper = false;
+  bool bumper_left = false;
+  bool bumper_right = false;
   bool rain_mega = false;
   bool tilt = false;
   bool wire_detected = true;
@@ -179,6 +196,7 @@ struct StateSnapshot {
   std::unordered_map<std::string, std::string> mega_settings;
   bool mega_connected = false;
   std::string mega_connection_status = "Mega no conectado";
+  std::string requested_mode = "idle";
 
   std::string map_json;
   double map_received_at = 0.0;
@@ -211,7 +229,14 @@ class MowerIosBridgeNode {
         rec_fixed_accuracy_m_(pnh_.param<double>("rec_fixed_accuracy_m", 0.05)),
         rec_float_accuracy_m_(pnh_.param<double>("rec_float_accuracy_m", 0.50)),
         rec_fix_loss_pause_s_(pnh_.param<double>("rec_fix_loss_pause_s", 2.0)),
-        map_update_timeout_s_(pnh_.param<double>("map_update_timeout_s", 3.0)) {
+        map_update_timeout_s_(pnh_.param<double>("map_update_timeout_s", 3.0)),
+        auto_schedule_enabled_(rosBoolParam(pnh_, "auto_schedule_enabled", false)) {
+    pnh_.param<std::vector<std::string>>("auto_schedule_times", auto_schedule_times_, std::vector<std::string>{});
+    pnh_.param<std::vector<int>>("auto_schedule_weekdays", auto_schedule_weekdays_, std::vector<int>{0, 1, 2, 3, 4, 5, 6});
+    if (auto_schedule_times_.empty()) {
+      const std::string csv = pnh_.param<std::string>("auto_schedule_times_csv", "");
+      if (!csv.empty()) auto_schedule_times_ = splitCsv(csv);
+    }
     {
       std::lock_guard<std::recursive_mutex> lock(state_mutex_);
       state_.started_at = wallNowSec();
@@ -254,6 +279,8 @@ class MowerIosBridgeNode {
         "/mega/sonar/right", 1,
         [this](const sensor_msgs::Range::ConstPtr& msg) { cbSonar(msg, 2); });
     sub_bumper_ = nh_.subscribe("/mega/bumper", 1, &MowerIosBridgeNode::cbBumper, this);
+    sub_bumper_left_ = nh_.subscribe("/mega/bumper_left", 1, &MowerIosBridgeNode::cbBumperLeft, this);
+    sub_bumper_right_ = nh_.subscribe("/mega/bumper_right", 1, &MowerIosBridgeNode::cbBumperRight, this);
     sub_rain_ = nh_.subscribe("/mega/rain", 1, &MowerIosBridgeNode::cbRainMega, this);
     sub_tilt_ = nh_.subscribe("/mega/tilt", 1, &MowerIosBridgeNode::cbTilt, this);
     sub_wire_ =
@@ -279,6 +306,8 @@ class MowerIosBridgeNode {
         nh_.createTimer(ros::Duration(sample_period), &MowerIosBridgeNode::cbSampleRecording, this);
     settings_timer_ =
         nh_.createTimer(ros::Duration(3.0), &MowerIosBridgeNode::cbRequestSettings, this, true, true);
+    schedule_timer_ =
+        nh_.createTimer(ros::Duration(1.0), &MowerIosBridgeNode::cbAutoSchedule, this, false, true);
   }
 
   ~MowerIosBridgeNode() {
@@ -334,6 +363,11 @@ class MowerIosBridgeNode {
   double rec_float_accuracy_m_;
   double rec_fix_loss_pause_s_;
   double map_update_timeout_s_;
+  bool auto_schedule_enabled_;
+  std::vector<std::string> auto_schedule_times_;
+  std::vector<int> auto_schedule_weekdays_;
+  std::string last_schedule_fire_key_;
+  std::atomic<double> last_app_seen_at_{0.0};
 
   // ROS pubs/subs/services
   ros::Publisher action_pub_;
@@ -361,6 +395,8 @@ class MowerIosBridgeNode {
   ros::Subscriber sub_sonar_left_;
   ros::Subscriber sub_sonar_right_;
   ros::Subscriber sub_bumper_;
+  ros::Subscriber sub_bumper_left_;
+  ros::Subscriber sub_bumper_right_;
   ros::Subscriber sub_rain_;
   ros::Subscriber sub_tilt_;
   ros::Subscriber sub_wire_;
@@ -377,6 +413,7 @@ class MowerIosBridgeNode {
 
   ros::Timer recording_timer_;
   ros::Timer settings_timer_;
+  ros::Timer schedule_timer_;
 
   // HTTP / UDP
   std::atomic<bool> running_{false};
@@ -449,6 +486,18 @@ class MowerIosBridgeNode {
   void cbBumper(const std_msgs::Bool::ConstPtr& msg) {
     std::lock_guard<std::recursive_mutex> lock(state_mutex_);
     state_.bumper = msg->data;
+  }
+
+  void cbBumperLeft(const std_msgs::Bool::ConstPtr& msg) {
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    state_.bumper_left = msg->data;
+    state_.bumper = state_.bumper_left || state_.bumper_right;
+  }
+
+  void cbBumperRight(const std_msgs::Bool::ConstPtr& msg) {
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    state_.bumper_right = msg->data;
+    state_.bumper = state_.bumper_left || state_.bumper_right;
   }
 
   void cbRainMega(const std_msgs::Bool::ConstPtr& msg) {
@@ -636,6 +685,81 @@ class MowerIosBridgeNode {
     ROS_INFO("[ios_bridge] requested settings from Mega");
   }
 
+  bool scheduleWeekdayAllowed(int weekday) const {
+    for (int d : auto_schedule_weekdays_) {
+      if (d == weekday) return true;
+    }
+    return false;
+  }
+
+  bool parseHourMinute(const std::string& value, int& hour, int& minute) const {
+    if (value.size() != 5 || value[2] != ':') return false;
+    if (!std::isdigit(static_cast<unsigned char>(value[0])) ||
+        !std::isdigit(static_cast<unsigned char>(value[1])) ||
+        !std::isdigit(static_cast<unsigned char>(value[3])) ||
+        !std::isdigit(static_cast<unsigned char>(value[4]))) {
+      return false;
+    }
+    hour = std::stoi(value.substr(0, 2));
+    minute = std::stoi(value.substr(3, 2));
+    return hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59;
+  }
+
+  void cbAutoSchedule(const ros::TimerEvent&) {
+    if (!auto_schedule_enabled_ || auto_schedule_times_.empty()) return;
+
+    const StateSnapshot snap = snapshot();
+    if (!snap.mega_connected) return;
+    if (snap.has_emergency && (snap.emergency.active_emergency || snap.emergency.latched_emergency)) return;
+    if (controlMode(snap) != "dock") return;
+
+    const std::time_t now_t = std::time(nullptr);
+    std::tm now_tm{};
+#if defined(_WIN32)
+    localtime_s(&now_tm, &now_t);
+#else
+    localtime_r(&now_t, &now_tm);
+#endif
+    // tm_wday: 0=Sunday..6=Saturday -> 0=Monday..6=Sunday
+    const int weekday = (now_tm.tm_wday + 6) % 7;
+    if (!scheduleWeekdayAllowed(weekday)) return;
+
+    for (const std::string& hhmm : auto_schedule_times_) {
+      int h = 0;
+      int m = 0;
+      if (!parseHourMinute(hhmm, h, m)) continue;
+      if (h != now_tm.tm_hour || m != now_tm.tm_min) continue;
+
+      char daybuf[16];
+      std::snprintf(daybuf, sizeof(daybuf), "%04d-%02d-%02d", now_tm.tm_year + 1900, now_tm.tm_mon + 1, now_tm.tm_mday);
+      const std::string key = std::string(daybuf) + "-" + hhmm;
+      if (key == last_schedule_fire_key_) return;
+
+      try {
+        setRequestedMode("auto");
+        checkHardware(snap, true);
+        callHighLevel(mower_msgs::HighLevelControlSrvRequest::COMMAND_START);
+        last_schedule_fire_key_ = key;
+        ROS_INFO("[ios_bridge] auto schedule fired at %s", hhmm.c_str());
+      } catch (const std::exception& exc) {
+        ROS_WARN("[ios_bridge] auto schedule failed at %s: %s", hhmm.c_str(), exc.what());
+      }
+      return;
+    }
+  }
+
+  void touchAppSession() {
+    const double now = wallNowSec();
+    const double last = last_app_seen_at_.load();
+    if ((now - last) > 5.0) {
+      std_msgs::Bool msg;
+      msg.data = true;
+      cfgget_pub_.publish(msg);
+      ROS_INFO("[ios_bridge] app session active: requesting Mega settings/telemetry");
+    }
+    last_app_seen_at_.store(now);
+  }
+
   // ----- State helpers -----
 
   bool manualActiveLocked() {
@@ -673,7 +797,27 @@ class MowerIosBridgeNode {
         {"uptimeMs", static_cast<std::int64_t>((wallNowSec() - snap.started_at) * 1000.0)},
         {"ip", localIp()},
         {"manualActive", snap.manual_active},
+        {"mode", controlMode(snap)},
     };
+  }
+
+  bool isAutoRunningState(const std::string& state) const {
+    return state == "mowing" || state == "trackingWire" || state == "exitingDock";
+  }
+
+  std::string controlMode(const StateSnapshot& snap) const {
+    const bool charging =
+        (snap.has_low_level && snap.low_level.is_charging) || (snap.has_power && snap.power.charge_current > 0.1f);
+    const std::string op_state = operatingState(snap);
+    if (snap.manual_active || op_state == "manual") return "manual";
+    if (charging && (op_state == "docked" || op_state == "parked" || op_state == "unknown")) return "dock";
+    if (isAutoRunningState(op_state)) return "auto";
+    return "idle";
+  }
+
+  void setRequestedMode(const std::string& mode) {
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    state_.requested_mode = mode;
   }
 
   std::string operatingState(const StateSnapshot& snap) const {
@@ -722,6 +866,7 @@ class MowerIosBridgeNode {
     if (snap.has_right_esc) wheel_current += std::abs(static_cast<double>(snap.right_esc.current));
 
     const std::string state = operatingState(snap);
+    const std::string mode = controlMode(snap);
     const bool running =
         state == "mowing" || state == "trackingWire" || state == "exitingDock" || state == "manual";
     const bool docked = state == "docked";
@@ -733,6 +878,8 @@ class MowerIosBridgeNode {
         {"connection", snap.mega_connected ? "connected" : "disconnected"},
         {"connectionMessage", snap.mega_connection_status},
         {"state", state},
+        {"mode", mode},
+        {"requestedMode", snap.requested_mode},
         {"robotStatus", snap.has_low_level ? static_cast<int>(snap.low_level.mower_status) : 0},
         {"errorCode", emergency_active ? 3 : (snap.tilt ? 4 : 0)},
         {"batteryVoltage", battery_voltage},
@@ -748,6 +895,8 @@ class MowerIosBridgeNode {
         {"rainDetected", rain_detected},
         {"bladesOn", snap.has_low_level && snap.low_level.mow_enabled},
         {"bumper", snap.bumper},
+        {"bumperLeft", snap.bumper_left},
+        {"bumperRight", snap.bumper_right},
         {"tiltActive", snap.tilt},
         {"lowBattery", false},
         {"wheelBlocked", false},
@@ -862,6 +1011,8 @@ class MowerIosBridgeNode {
         {"sonarRightHits", 0},
         {"sonarTriggered", sonar_triggered},
         {"bumper", snap.bumper},
+        {"bumperLeft", snap.bumper_left},
+        {"bumperRight", snap.bumper_right},
         {"tiltAngle", snap.tilt},
         {"tipOver", snap.tilt},
         {"gpsInsideFence", gpsFixTypeOrNone(snap) != "none"},
@@ -1511,12 +1662,16 @@ class MowerIosBridgeNode {
     const StateSnapshot snap = snapshot();
     ROS_INFO("[ios_bridge] command: %s", command.c_str());
     if (command == "start" || command == "exitDock") {
+      setRequestedMode("auto");
       checkHardware(snap, true);
       callHighLevel(mower_msgs::HighLevelControlSrvRequest::COMMAND_START);
-    } else if (command == "dock") {
+    } else if (command == "dock" || command == "dockMode") {
+      setRequestedMode("dock");
+      setManualActive(false);
       checkHardware(snap, true);
       callHighLevel(mower_msgs::HighLevelControlSrvRequest::COMMAND_HOME);
-    } else if (command == "stop") {
+    } else if (command == "stop" || command == "idleMode") {
+      setRequestedMode("idle");
       checkHardware(snap, false);
       std_msgs::String action;
       action.data = "mower_logic:mowing/pause";
@@ -1524,9 +1679,18 @@ class MowerIosBridgeNode {
       publishManualTwist(json{{"direction", "stop"}});
       setManualActive(false);
     } else if (command == "autoMode") {
+      setRequestedMode("auto");
       setManualActive(false);
+      checkHardware(snap, true);
+      callHighLevel(mower_msgs::HighLevelControlSrvRequest::COMMAND_START);
     } else if (command == "manualMode") {
-      setManualActive(true, 60.0);
+      setRequestedMode("manual");
+      checkHardware(snap, false);
+      // Pause mission before entering manual override.
+      std_msgs::String action;
+      action.data = "mower_logic:mowing/pause";
+      action_pub_.publish(action);
+      setManualActive(true, 600.0);
     } else if (command == "bladeOn") {
       checkHardware(snap, false);
       callMowerControl(true);
@@ -1540,6 +1704,7 @@ class MowerIosBridgeNode {
 
   void handleManual(const json& body) {
     checkHardware(snapshot(), false);
+    setRequestedMode("manual");
     const bool active = publishManualTwist(body);
     setManualActive(active);
   }
@@ -1814,6 +1979,7 @@ class MowerIosBridgeNode {
       if (req.method() == http::verb::options) {
         return jsonResponse(http::status::ok, json::object());
       }
+      touchAppSession();
 
       if (req.method() == http::verb::get && path == "/api/health") {
         return jsonResponse(http::status::ok, healthPayload());

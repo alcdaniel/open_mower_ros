@@ -19,6 +19,8 @@
  *   mega/sonar/left                 sensor_msgs/Range
  *   mega/sonar/right                sensor_msgs/Range
  *   mega/bumper                     std_msgs/Bool
+ *   mega/bumper_left                std_msgs/Bool
+ *   mega/bumper_right               std_msgs/Bool
  *   mega/rain                       std_msgs/Bool
  *   mega/tilt                       std_msgs/Bool
  *   mega/wire_detected              std_msgs/Bool
@@ -217,6 +219,8 @@ public:
         , gyro_y_raw_(0)
         , gyro_z_raw_(0)
         , bumper_(false)
+        , bumper_left_(false)
+        , bumper_right_(false)
         , rain_(false)
         , tilt_(false)
         , wire_(false)
@@ -249,6 +253,8 @@ public:
         pub_sonar_[1]  = nh.advertise<sensor_msgs::Range>("mega/sonar/left",  1);
         pub_sonar_[2]  = nh.advertise<sensor_msgs::Range>("mega/sonar/right", 1);
         pub_bumper_    = nh.advertise<std_msgs::Bool>("mega/bumper",       1);
+        pub_bumper_left_  = nh.advertise<std_msgs::Bool>("mega/bumper_left",  1);
+        pub_bumper_right_ = nh.advertise<std_msgs::Bool>("mega/bumper_right", 1);
         pub_rain_      = nh.advertise<std_msgs::Bool>("mega/rain",         1);
         pub_tilt_      = nh.advertise<std_msgs::Bool>("mega/tilt",         1);
         pub_wire_      = nh.advertise<std_msgs::Bool>("mega/wire_detected",1);
@@ -331,7 +337,7 @@ private:
     double      compass_deg_;
     double      gyro_roll_deg_, gyro_pitch_deg_, gyro_yaw_deg_;
     int         gyro_x_raw_, gyro_y_raw_, gyro_z_raw_;
-    bool        bumper_, rain_, tilt_, wire_;
+    bool        bumper_, bumper_left_, bumper_right_, rain_, tilt_, wire_;
     int         sonar_[3];
 
     // ── Serial (write path guarded by write_mutex_) ───────────────────────────
@@ -345,7 +351,7 @@ private:
     // ── ROS handles ───────────────────────────────────────────────────────────
     ros::Publisher     pub_emergency_, pub_status_, pub_power_;
     ros::Publisher     pub_twist_, pub_esc_l_, pub_esc_r_;
-    ros::Publisher     pub_sonar_[3], pub_bumper_, pub_rain_, pub_tilt_, pub_wire_;
+    ros::Publisher     pub_sonar_[3], pub_bumper_, pub_bumper_left_, pub_bumper_right_, pub_rain_, pub_tilt_, pub_wire_;
     ros::Publisher     pub_compass_imu_, pub_gyro_imu_;
     ros::Publisher     pub_cfg_, pub_cfg_loaded_, pub_sstat_;
     ros::Publisher     pub_connected_, pub_connection_status_;
@@ -796,10 +802,27 @@ private:
             }
 
         } else if (type == "BUMPER") {
-            bool b = !fields.empty() && fields[0] == "1";
-            { std::lock_guard<std::mutex> lk(state_mutex_); bumper_ = b; }
-            std_msgs::Bool bm; bm.data = b;
+            // New format: BUMPER,total,left,right
+            // Legacy format: BUMPER,total
+            bool total = !fields.empty() && fields[0] == "1";
+            bool left = total;
+            bool right = total;
+            if (fields.size() >= 3) {
+                left = fields[1] == "1";
+                right = fields[2] == "1";
+                total = total || left || right;
+            }
+            { std::lock_guard<std::mutex> lk(state_mutex_);
+                bumper_ = total;
+                bumper_left_ = left;
+                bumper_right_ = right;
+            }
+            std_msgs::Bool bm; bm.data = total;
+            std_msgs::Bool bl; bl.data = left;
+            std_msgs::Bool br; br.data = right;
             pub_bumper_.publish(bm);
+            pub_bumper_left_.publish(bl);
+            pub_bumper_right_.publish(br);
 
         } else if (type == "RAIN") {
             bool r = !fields.empty() && fields[0] != "0";
