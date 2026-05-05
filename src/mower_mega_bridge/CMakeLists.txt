@@ -22,6 +22,8 @@ include_directories(${catkin_INCLUDE_DIRS})
 
 add_executable(mower_mega_bridge_node src/mower_mega_bridge_node.cpp)
 target_link_libraries(mower_mega_bridge_node ${catkin_LIBRARIES})
+add_dependencies(mower_mega_bridge_node mower_msgs_generate_messages_cpp)
 
 add_executable(calibrate_odom_gain_node src/calibrate_odom_gain_node.cpp)
 target_link_libraries(calibrate_odom_gain_node ${catkin_LIBRARIES})
+add_dependencies(calibrate_odom_gain_node mower_msgs_generate_messages_cpp)
