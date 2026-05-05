@@ -219,6 +219,7 @@ class MowerIosBridgeNode {
 
     action_pub_ = nh_.advertise<std_msgs::String>("/xbot/action", 5);
     joy_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/joy_vel", 1);
+    manual_cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/ll/manual_cmd_vel", 1);
     cfgget_pub_ = nh_.advertise<std_msgs::Bool>("/mega/cfgget", 1);
     cfgset_pub_ = nh_.advertise<std_msgs::String>("/mega/cfgset", 10);
     rpc_request_pub_ = nh_.advertise<xbot_rpc::RpcRequest>("/xbot/rpc/request", 10);
@@ -336,6 +337,7 @@ class MowerIosBridgeNode {
   // ROS pubs/subs/services
   ros::Publisher action_pub_;
   ros::Publisher joy_vel_pub_;
+  ros::Publisher manual_cmd_vel_pub_;
   ros::Publisher cfgget_pub_;
   ros::Publisher cfgset_pub_;
   ros::Publisher rpc_request_pub_;
@@ -1634,6 +1636,7 @@ class MowerIosBridgeNode {
       twist.linear.x = y * linear_speed_.load();
       twist.angular.z = x * angular_speed_.load();
       joy_vel_pub_.publish(twist);
+      manual_cmd_vel_pub_.publish(twist);
       return std::abs(x) > 1e-3 || std::abs(y) > 1e-3;
     }
 
@@ -1669,11 +1672,13 @@ class MowerIosBridgeNode {
       twist.angular.z = -angular_speed_.load();
     } else if (direction == "stop") {
       joy_vel_pub_.publish(twist);
+      manual_cmd_vel_pub_.publish(twist);
       return false;
     } else {
       throw std::runtime_error("unsupported manual direction '" + direction + "'");
     }
     joy_vel_pub_.publish(twist);
+    manual_cmd_vel_pub_.publish(twist);
     return true;
   }
 
