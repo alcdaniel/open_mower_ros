@@ -634,8 +634,10 @@ private:
         if (!parseMsg(line, type, fields)) return;
         markRx();
 
-        if (type == "HB") {
-            // alive
+        if (type == "HB" || type == "IALIVE" || type == "ACK") {
+            // alive — markRx() already called above.
+            // IALIVE = Mega in discovery mode, we already sent HELLO in heartbeatLoop.
+            // ACK    = Mega acknowledged link activation (ACK,MEGA,V9.751).
 
         } else if (type == "BATT") {
             mower_msgs::Power pm;
