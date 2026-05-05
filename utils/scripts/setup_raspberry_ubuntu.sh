@@ -161,6 +161,37 @@ configure_uart_for_mega_bridge() {
   sudo systemctl disable --now serial-getty@ttyS0.service >/dev/null 2>&1 || true
   sudo systemctl mask serial-getty@ttyAMA0.service >/dev/null 2>&1 || true
   sudo systemctl mask serial-getty@ttyS0.service >/dev/null 2>&1 || true
+  # If Bluetooth modem init is still enabled, it can steal UART0 on some boots.
+  sudo systemctl disable --now hciuart.service >/dev/null 2>&1 || true
+  sudo systemctl mask hciuart.service >/dev/null 2>&1 || true
+
+  # Force GPIO14/15 into UART0 ALT0 mode now (and persist via systemd service).
+  if command -v raspi-gpio >/dev/null 2>&1; then
+    sudo raspi-gpio set 14 a0 || true
+    sudo raspi-gpio set 15 a0 || true
+
+    local uart_pins_service="/etc/systemd/system/openmower-uart-pins.service"
+    sudo bash -c "cat > '${uart_pins_service}' << 'UART_PINS_EOF'
+[Unit]
+Description=Force UART0 pinmux on GPIO14/15 for OpenMower
+After=local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/raspi-gpio set 14 a0
+ExecStart=/usr/bin/raspi-gpio set 15 a0
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+UART_PINS_EOF
+"
+    sudo systemctl daemon-reload
+    sudo systemctl enable openmower-uart-pins.service >/dev/null 2>&1 || true
+    sudo systemctl start openmower-uart-pins.service >/dev/null 2>&1 || true
+  else
+    echo "Warning: raspi-gpio not found; cannot force GPIO14/15 ALT0 automatically."
+  fi
 
   # Ensure current user can open serial devices without sudo.
   if id -nG "${USER}" | grep -qw dialout; then
