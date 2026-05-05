@@ -4,9 +4,10 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 ENV_FILE="${MOWER_ENV_FILE:-${REPO_ROOT}/.env}"
+LOG_FILE="${LOG_FILE:-/var/log/openmower-wifi.log}"
 
 log() {
-  echo "[openmower-wifi] $*"
+  echo "[openmower-wifi] $*" | tee -a "${LOG_FILE}" 2>/dev/null || echo "[openmower-wifi] $*"
 }
 
 run_as_root() {
@@ -19,7 +20,18 @@ run_as_root() {
 
 if [[ ! -f "${ENV_FILE}" ]]; then
   log "No .env file found at ${ENV_FILE}; Wi-Fi auto-connect is not configured."
-  log "Run ./utils/scripts/setup_raspberry_ubuntu.sh or create ${ENV_FILE} from the README instructions."
+  log ""
+  log "Create ${ENV_FILE} with:"
+  log "  cat > ${ENV_FILE} << 'EOF'"
+  log "  MOWER_WIFI_SSID=\"your-network\""
+  log "  MOWER_WIFI_PASSWORD=\"your-password\""
+  log "  MOWER_WIFI_CONNECTION_NAME=\"openmower-wifi\""
+  log "  EOF"
+  log ""
+  log "Then reconnect:"
+  log "  bash ${SCRIPT_DIR}/connect_wifi_from_env.sh"
+  log "  or: sudo systemctl restart openmower-wifi.service"
+  log ""
   exit 0
 fi
 
