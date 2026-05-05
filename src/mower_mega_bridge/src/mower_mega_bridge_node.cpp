@@ -93,19 +93,22 @@ static bool parseMsg(const std::string& raw,
 
     if (line.size() < 4 || line[0] != '$') return false;
 
+    std::string body;
     auto star = line.rfind('*');
-    if (star == std::string::npos) return false;
-
-    std::string body   = line.substr(1, star - 1);
-    std::string cs_str = line.substr(star + 1);
-
-    uint8_t got;
-    try { got = static_cast<uint8_t>(std::stoul(cs_str, nullptr, 16)); }
-    catch (...) { return false; }
-
-    if (xorCs(body) != got) {
-        ROS_WARN_THROTTLE(5, "[mega_bridge] bad checksum: %s", line.c_str());
-        return false;
+    if (star == std::string::npos) {
+        // Plain line format: $TYPE,field1,field2
+        body = line.substr(1);
+    } else {
+        // Framed + checksum format: $TYPE,field1,...*CS
+        body = line.substr(1, star - 1);
+        std::string cs_str = line.substr(star + 1);
+        uint8_t got;
+        try { got = static_cast<uint8_t>(std::stoul(cs_str, nullptr, 16)); }
+        catch (...) { return false; }
+        if (xorCs(body) != got) {
+            ROS_WARN_THROTTLE(5, "[mega_bridge] bad checksum: %s", line.c_str());
+            return false;
+        }
     }
 
     std::istringstream ss(body);
@@ -118,9 +121,19 @@ static bool parseMsg(const std::string& raw,
 
     type = parts[0];
     fields.clear();
-    // drop last token (sequence number)
-    for (std::size_t i = 1; i + 1 < parts.size(); ++i)
-        fields.push_back(parts[i]);
+    for (std::size_t i = 1; i < parts.size(); ++i) fields.push_back(parts[i]);
+    // If last token is numeric sequence, drop it (supports legacy framed format).
+    if (!fields.empty()) {
+        const std::string& maybe_seq = fields.back();
+        bool numeric = !maybe_seq.empty();
+        for (char c : maybe_seq) {
+            if (!std::isdigit(static_cast<unsigned char>(c))) {
+                numeric = false;
+                break;
+            }
+        }
+        if (numeric) fields.pop_back();
+    }
     return true;
 }
 
