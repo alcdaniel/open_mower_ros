@@ -218,7 +218,7 @@ public:
         max_pwm_    = pnh.param<int>("max_pwm", 255);
         hb_hz_      = pnh.param<double>("heartbeat_hz", 3.0);
         offline_publish_hz_ = pnh.param<double>("offline_publish_hz", 1.0);
-        rx_timeout_s_       = pnh.param<double>("rx_timeout_s", 3.0);
+        rx_timeout_s_       = pnh.param<double>("rx_timeout_s", 15.0);
 
         // Latched so late subscribers (e.g. mower_logic during startup) always
         // receive an initial emergency state and do not block waiting forever.
