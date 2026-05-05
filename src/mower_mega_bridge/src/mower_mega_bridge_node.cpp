@@ -1087,13 +1087,7 @@ private:
 
     void heartbeatLoop()
     {
-        // Match Mega protocol: $HELLO,RPI on startup + $HB,RPI every 2s.
-        // Mega timeout is 8s; sending at 0.5 Hz keeps the link comfortably alive.
-        ros::Rate rate(0.5);  // 2 second period
-
-        // Initial discovery handshake
-        send("HELLO", {"RPI"});
-
+        ros::Rate rate(hb_hz_);
         while (ros::ok()) {
             send("HB", {"RPI"});
             rate.sleep();
