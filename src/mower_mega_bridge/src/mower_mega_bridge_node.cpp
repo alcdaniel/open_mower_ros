@@ -251,6 +251,7 @@ public:
 
         sub_cfgget_ = nh.subscribe("mega/cfgget", 1, &MegaBridge::cbCfgGet, this);
         sub_cfgset_ = nh.subscribe("mega/cfgset", 1, &MegaBridge::cbCfgSet, this);
+        sub_blade_cmd_ = nh.subscribe("mega/blade_cmd", 1, &MegaBridge::cbBladeCmd, this);
 
         // Nav2 autonomous command (mode=0: pure pursuit, no heading loop)
         sub_cmd_vel_ = nh.subscribe("ll/cmd_vel", 1,
@@ -336,7 +337,7 @@ private:
     ros::Publisher     pub_cfg_, pub_cfg_loaded_, pub_sstat_;
     ros::Publisher     pub_connected_, pub_connection_status_;
     ros::Publisher     pub_odom_;  // Odometry feedback
-    ros::Subscriber    sub_cmd_vel_, sub_manual_cmd_vel_, sub_hl_, sub_cfgget_, sub_cfgset_;
+    ros::Subscriber    sub_cmd_vel_, sub_manual_cmd_vel_, sub_hl_, sub_cfgget_, sub_cfgset_, sub_blade_cmd_;
     ros::ServiceServer srv_mow_, srv_em_;
     ros::Timer         status_timer_;
 
@@ -915,6 +916,11 @@ private:
             if (!fields.empty()) {
                 std::string cmd_type = fields[0];
                 ROS_DEBUG_THROTTLE(1, "[mega_bridge] ACK received for: %s", cmd_type.c_str());
+                if (cmd_type.find("BLADE") != std::string::npos ||
+                    cmd_type == "MOV" ||
+                    cmd_type.find("MOV_") != std::string::npos) {
+                    ROS_INFO_THROTTLE(0.5, "[mega_bridge] ACK %s", cmd_type.c_str());
+                }
             }
 
         } else if (type == "ODOM") {
@@ -997,7 +1003,10 @@ private:
 
     void sendMOVCommand(const geometry_msgs::Twist::ConstPtr& twist, int mode)
     {
-        if (emergency_ || local_avoid_) return;
+        if (emergency_) return;
+        // Keep obstacle avoidance lock for autonomous Nav2 only.
+        // Manual teleop (mode=1) must still be able to command wheels.
+        if (local_avoid_ && mode == 0) return;
 
         // Convert ROS Twist to movement parameters
         double vx = twist->linear.x;           // m/s
@@ -1056,6 +1065,16 @@ private:
         std::string key = msg->data.substr(0, eq);
         std::string val = msg->data.substr(eq + 1);
         send("CMD", {"CFGSET", key, val});
+    }
+
+    void cbBladeCmd(const std_msgs::Bool::ConstPtr& msg)
+    {
+        if (!mega_connected_.load()) {
+            ROS_WARN_THROTTLE(2, "[mega_bridge] rejecting blade_cmd: Mega not connected");
+            return;
+        }
+        mow_enabled_ = msg->data;
+        send("CMD", {"BLADE", msg->data ? "ON" : "OFF"});
     }
 
     // ── ROS services ──────────────────────────────────────────────────────────

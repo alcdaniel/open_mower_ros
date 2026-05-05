@@ -220,6 +220,7 @@ class MowerIosBridgeNode {
     action_pub_ = nh_.advertise<std_msgs::String>("/xbot/action", 5);
     joy_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/joy_vel", 1);
     manual_cmd_vel_pub_ = nh_.advertise<geometry_msgs::Twist>("/ll/manual_cmd_vel", 1);
+    blade_cmd_pub_ = nh_.advertise<std_msgs::Bool>("/mega/blade_cmd", 1);
     cfgget_pub_ = nh_.advertise<std_msgs::Bool>("/mega/cfgget", 1);
     cfgset_pub_ = nh_.advertise<std_msgs::String>("/mega/cfgset", 10);
     rpc_request_pub_ = nh_.advertise<xbot_rpc::RpcRequest>("/xbot/rpc/request", 10);
@@ -338,6 +339,7 @@ class MowerIosBridgeNode {
   ros::Publisher action_pub_;
   ros::Publisher joy_vel_pub_;
   ros::Publisher manual_cmd_vel_pub_;
+  ros::Publisher blade_cmd_pub_;
   ros::Publisher cfgget_pub_;
   ros::Publisher cfgset_pub_;
   ros::Publisher rpc_request_pub_;
@@ -1617,14 +1619,19 @@ class MowerIosBridgeNode {
 
   void callMowerControl(bool enabled) {
     const std::string svc = "/ll/_service/mow_enabled";
-    if (!ros::service::waitForService(svc, ros::Duration(1.0))) {
-      throw std::runtime_error("Servicio " + svc + " no disponible. ¿Está mower_mega_bridge en ejecución?");
+    bool done = false;
+    if (ros::service::waitForService(svc, ros::Duration(1.0))) {
+      mower_msgs::MowerControlSrv srv;
+      srv.request.mow_enabled = enabled ? 1 : 0;
+      srv.request.mow_direction = 0;
+      done = mower_control_srv_.call(srv);
     }
-    mower_msgs::MowerControlSrv srv;
-    srv.request.mow_enabled = enabled ? 1 : 0;
-    srv.request.mow_direction = 0;
-    if (!mower_control_srv_.call(srv)) {
-      throw std::runtime_error("Error en " + svc);
+    if (!done) {
+      // Fallback path: publish direct blade command for mega_bridge.
+      std_msgs::Bool msg;
+      msg.data = enabled;
+      blade_cmd_pub_.publish(msg);
+      ROS_WARN("[ios_bridge] %s service failed, sent fallback /mega/blade_cmd", svc.c_str());
     }
   }
 
