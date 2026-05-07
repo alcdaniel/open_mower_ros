@@ -33,7 +33,7 @@ set_export_var OM_GPS_PORT '"/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-
 set_export_var OM_USE_RELATIVE_POSITION False
 set_export_var OM_USE_NTRIP True
 set_export_var OM_NTRIP_HOSTNAME 192.148.213.42
-set_export_var OM_NTRIP_PORT 2101
+set_export_var OM_NTRIP_PORT 2102
 set_export_var OM_NTRIP_ENDPOINT XIXO3M
 
 if [[ -f "${CUSTOM_PARAMS_FILE}" ]]; then

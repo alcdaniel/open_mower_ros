@@ -229,7 +229,7 @@ MOWER_WIFI_CONNECTION_NAME="openmower-wifi"
 # Optional NTRIP placeholders for the future rover GPS integration.
 # The current setup script only uses the Wi-Fi values above.
 NTRIP_CASTER_HOST=""
-NTRIP_CASTER_PORT="2101"
+NTRIP_CASTER_PORT="2102"
 NTRIP_MOUNTPOINT=""
 NTRIP_USERNAME=""
 NTRIP_PASSWORD=""
@@ -537,7 +537,7 @@ setup_mower_config() {
   }
   _ntrip_sed OM_USE_NTRIP       True
   _ntrip_sed OM_NTRIP_HOSTNAME  192.148.213.42
-  _ntrip_sed OM_NTRIP_PORT      2101
+  _ntrip_sed OM_NTRIP_PORT      2102
   _ntrip_sed OM_NTRIP_ENDPOINT  XIXO3M
   _ntrip_sed OM_NTRIP_RECONNECT_WAIT_SECONDS 5
   _ntrip_sed OM_NTRIP_RECONNECT_MAX          99999
