@@ -161,6 +161,7 @@ struct StateSnapshot {
   bool has_left_esc = false;
   bool has_right_esc = false;
   bool has_pose = false;
+  bool has_raw_gps = false;
   bool has_gps_llh = false;
   bool has_gps_alt = false;
 
@@ -171,6 +172,7 @@ struct StateSnapshot {
   mower_msgs::ESCStatus left_esc;
   mower_msgs::ESCStatus right_esc;
   xbot_msgs::AbsolutePose pose;
+  xbot_msgs::AbsolutePose raw_gps;
   double gps_lat = 0.0;
   double gps_lon = 0.0;
   double gps_alt = 0.0;
@@ -182,6 +184,7 @@ struct StateSnapshot {
   double left_esc_seen = 0.0;
   double right_esc_seen = 0.0;
   double pose_seen = 0.0;
+  double raw_gps_seen = 0.0;
   double gps_llh_seen = 0.0;
 
   std::array<int, 3> sonar{{999, 999, 999}};
@@ -275,6 +278,7 @@ class MowerIosBridgeNode {
     sub_right_esc_ = nh_.subscribe(
         "/ll/diff_drive/right_esc_status", 1, &MowerIosBridgeNode::cbRightEsc, this);
     sub_pose_ = nh_.subscribe("/xbot_positioning/xb_pose", 1, &MowerIosBridgeNode::cbPose, this);
+    sub_raw_gps_ = nh_.subscribe("/ll/position/gps", 1, &MowerIosBridgeNode::cbRawGps, this);
     sub_gps_nmea_ =
         nh_.subscribe("/ll/position/gps/nmea", 3, &MowerIosBridgeNode::cbGpsNmea, this);
 
@@ -400,6 +404,7 @@ class MowerIosBridgeNode {
   ros::Subscriber sub_left_esc_;
   ros::Subscriber sub_right_esc_;
   ros::Subscriber sub_pose_;
+  ros::Subscriber sub_raw_gps_;
   ros::Subscriber sub_gps_nmea_;
   ros::Subscriber sub_sonar_front_;
   ros::Subscriber sub_sonar_left_;
@@ -481,6 +486,13 @@ class MowerIosBridgeNode {
     state_.pose = *msg;
     state_.has_pose = true;
     state_.pose_seen = wallNowSec();
+  }
+
+  void cbRawGps(const xbot_msgs::AbsolutePose::ConstPtr& msg) {
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    state_.raw_gps = *msg;
+    state_.has_raw_gps = true;
+    state_.raw_gps_seen = wallNowSec();
   }
 
   static std::vector<std::string> splitNmeaSentence(const std::string& sentence) {
@@ -1045,8 +1057,10 @@ class MowerIosBridgeNode {
     if (!snap.has_power || (now - snap.power_seen) > stale_s)
       markUnavailable("BATT", "NO_CONN");
 
-    // GPS: pose topic
-    if (!snap.has_pose || (now - snap.pose_seen) > stale_s)
+    // GPS: consider either fused pose or raw GPS stream
+    const bool pose_fresh = snap.has_pose && (now - snap.pose_seen) <= stale_s;
+    const bool raw_gps_fresh = snap.has_raw_gps && (now - snap.raw_gps_seen) <= stale_s;
+    if (!pose_fresh && !raw_gps_fresh)
       markUnavailable("GPS", "NO_CONN");
 
     // Compass
@@ -1495,7 +1509,9 @@ class MowerIosBridgeNode {
   }
 
   std::string gpsFixTypeOrNone(const StateSnapshot& snap) const {
-    return snap.has_pose ? gpsFixType(snap.pose) : "none";
+    if (snap.has_pose) return gpsFixType(snap.pose);
+    if (snap.has_raw_gps) return gpsFixType(snap.raw_gps);
+    return "none";
   }
 
   bool recordingAllowed(const StateSnapshot& snap) const {
