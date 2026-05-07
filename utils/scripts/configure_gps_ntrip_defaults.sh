@@ -10,11 +10,9 @@ CUSTOM_PARAMS_FILE="${HOME}/custom_params.yaml"
 set_export_var() {
   local key="$1"
   local val="$2"
-  if grep -qE "^[#[:space:]]*export ${key}=" "${CONFIG_FILE}"; then
-    sed -i -E "s|^[#[:space:]]*export ${key}=.*|export ${key}=${val}|" "${CONFIG_FILE}"
-  else
-    echo "export ${key}=${val}" >> "${CONFIG_FILE}"
-  fi
+  # Remove all existing key definitions first (prevents duplicates)
+  sed -i -E "/^[#[:space:]]*export ${key}=.*/d" "${CONFIG_FILE}"
+  echo "export ${key}=${val}" >> "${CONFIG_FILE}"
 }
 
 echo "Configuring GPS/NTRIP defaults..."
@@ -35,6 +33,17 @@ set_export_var OM_USE_NTRIP True
 set_export_var OM_NTRIP_HOSTNAME 192.148.213.42
 set_export_var OM_NTRIP_PORT 2102
 set_export_var OM_NTRIP_ENDPOINT XIXO3M
+
+# Ensure new interactive shells load mower_config.sh automatically.
+BASHRC_FILE="${HOME}/.bashrc"
+SOURCE_LINE='[ -f "$HOME/open_mower_ros/mower_config.sh" ] && source "$HOME/open_mower_ros/mower_config.sh"'
+if [[ -f "${BASHRC_FILE}" ]] && ! grep -Fq "${SOURCE_LINE}" "${BASHRC_FILE}"; then
+  {
+    echo ""
+    echo "# Auto-load OpenMower env"
+    echo "${SOURCE_LINE}"
+  } >> "${BASHRC_FILE}"
+fi
 
 if [[ -f "${CUSTOM_PARAMS_FILE}" ]]; then
   sed -i -E 's|^[[:space:]]*baud_rate:[[:space:]]*[0-9]+|      baud_rate: 115200|' "${CUSTOM_PARAMS_FILE}" || true

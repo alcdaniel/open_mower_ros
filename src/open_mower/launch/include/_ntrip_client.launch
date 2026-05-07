@@ -10,8 +10,8 @@
     <node name="ntrip_watchdog" pkg="open_mower" type="ntrip_watchdog.py"
           output="screen" respawn="true" respawn_delay="30">
         <param name="host"       value="$(optenv OM_NTRIP_HOSTNAME 192.148.213.42)"/>
-        <param name="port"       value="$(optenv OM_NTRIP_PORT 2101)"/>
-        <param name="mountpoint" value="$(optenv OM_NTRIP_ENDPOINT VRS3M)"/>
+        <param name="port"       value="$(optenv OM_NTRIP_PORT 2102)"/>
+        <param name="mountpoint" value="$(optenv OM_NTRIP_ENDPOINT XIXO3M)"/>
         <param name="username"   value="$(optenv OM_NTRIP_USER)"/>
         <param name="password"   value="$(optenv OM_NTRIP_PASSWORD)"/>
     </node>
