@@ -75,7 +75,7 @@ remove_serial_console_tokens() {
 
   for token in ${old_cmdline}; do
     case "${token}" in
-      console=serial0,115200|console=ttyAMA0,115200|console=ttyS0,115200)
+      console=serial0,*|console=ttyAMA0,*|console=ttyS0,*|kgdboc=serial0,*|kgdboc=ttyAMA0,*|kgdboc=ttyS0,*|earlycon=serial0,*|earlycon=ttyAMA0,*|earlycon=ttyS0,*|earlycon)
         ;;
       *)
         if [[ -z "${new_cmdline}" ]]; then
@@ -92,6 +92,36 @@ remove_serial_console_tokens() {
     NEEDS_REBOOT=1
     echo "Removed serial console from ${file_path}."
   fi
+}
+
+force_bootloader_no_uart() {
+  if ! command -v rpi-eeprom-config >/dev/null 2>&1; then
+    return
+  fi
+
+  local tmp_cfg
+  tmp_cfg="$(mktemp)"
+
+  if ! run_root rpi-eeprom-config > "${tmp_cfg}" 2>/dev/null; then
+    rm -f "${tmp_cfg}"
+    return
+  fi
+
+  # Ensure bootloader does not enable UART boot/debug path.
+  if grep -Eq '^[[:space:]]*BOOT_UART=1[[:space:]]*$' "${tmp_cfg}"; then
+    sed -E 's/^[[:space:]]*BOOT_UART=1[[:space:]]*$/BOOT_UART=0/' "${tmp_cfg}" > "${tmp_cfg}.new"
+    mv "${tmp_cfg}.new" "${tmp_cfg}"
+    run_root rpi-eeprom-config --apply "${tmp_cfg}" >/dev/null 2>&1 || true
+    NEEDS_REBOOT=1
+    echo "Set BOOT_UART=0 in EEPROM config."
+  elif ! grep -Eq '^[[:space:]]*BOOT_UART=' "${tmp_cfg}"; then
+    printf '\nBOOT_UART=0\n' >> "${tmp_cfg}"
+    run_root rpi-eeprom-config --apply "${tmp_cfg}" >/dev/null 2>&1 || true
+    NEEDS_REBOOT=1
+    echo "Added BOOT_UART=0 to EEPROM config."
+  fi
+
+  rm -f "${tmp_cfg}"
 }
 
 disable_and_mask_service() {
@@ -119,6 +149,9 @@ disable_and_mask_service serial-getty@ttyAMA0.service
 disable_and_mask_service serial-getty@ttyS0.service
 disable_and_mask_service serial-getty@serial0.service
 disable_and_mask_service hciuart.service
+
+# Ensure EEPROM bootloader is not configured to use UART boot/debug.
+force_bootloader_no_uart
 
 # Force GPIO14/15 into UART0 ALT0 mode now (and persist via systemd service).
 if command -v raspi-gpio >/dev/null 2>&1; then
