@@ -26,6 +26,7 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
 fi
 
 set_export_var OM_GPS_PROTOCOL UBX
+set_export_var OM_MEGA_BAUD 57600
 set_export_var OM_GPS_BAUDRATE '"115200"'
 set_export_var OM_GPS_PORT '"/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00"'
 set_export_var OM_USE_RELATIVE_POSITION False
@@ -50,4 +51,4 @@ if [[ -f "${CUSTOM_PARAMS_FILE}" ]]; then
 fi
 
 echo "Done. Current key values in mower_config.sh:"
-grep -E '^(export OM_GPS_PROTOCOL|export OM_GPS_BAUDRATE|export OM_GPS_PORT|export OM_USE_NTRIP|export OM_NTRIP_HOSTNAME|export OM_NTRIP_PORT|export OM_NTRIP_ENDPOINT)=' "${CONFIG_FILE}" || true
+grep -E '^(export OM_MEGA_BAUD|export OM_GPS_PROTOCOL|export OM_GPS_BAUDRATE|export OM_GPS_PORT|export OM_USE_NTRIP|export OM_NTRIP_HOSTNAME|export OM_NTRIP_PORT|export OM_NTRIP_ENDPOINT)=' "${CONFIG_FILE}" || true
