@@ -260,6 +260,7 @@ public:
         pub_wire_      = nh.advertise<std_msgs::Bool>("mega/wire_detected",1);
         pub_compass_imu_ = nh.advertise<sensor_msgs::Imu>("mega/imu",     1);
         pub_gyro_imu_ = nh.advertise<sensor_msgs::Imu>("mega/imu_gyro",    1);
+        pub_ll_imu_raw_ = nh.advertise<sensor_msgs::Imu>("ll/imu/data_raw", 1);
         pub_cfg_        = nh.advertise<std_msgs::String>("mega/cfg",        10);
         pub_cfg_loaded_ = nh.advertise<std_msgs::Bool>  ("mega/cfg_loaded",  1);
         pub_sstat_      = nh.advertise<std_msgs::String>("mega/sstat",      10);
@@ -352,7 +353,7 @@ private:
     ros::Publisher     pub_emergency_, pub_status_, pub_power_;
     ros::Publisher     pub_twist_, pub_esc_l_, pub_esc_r_;
     ros::Publisher     pub_sonar_[3], pub_bumper_, pub_bumper_left_, pub_bumper_right_, pub_rain_, pub_tilt_, pub_wire_;
-    ros::Publisher     pub_compass_imu_, pub_gyro_imu_;
+    ros::Publisher     pub_compass_imu_, pub_gyro_imu_, pub_ll_imu_raw_;
     ros::Publisher     pub_cfg_, pub_cfg_loaded_, pub_sstat_;
     ros::Publisher     pub_connected_, pub_connection_status_;
     ros::Publisher     pub_odom_;  // Odometry feedback
@@ -926,6 +927,7 @@ private:
                 imu.angular_velocity_covariance[8] = 0.02;
                 imu.linear_acceleration_covariance[0] = -1;
                 pub_gyro_imu_.publish(imu);
+                pub_ll_imu_raw_.publish(imu);
             }
 
         } else if (type == "CFG") {

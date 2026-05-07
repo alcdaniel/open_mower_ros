@@ -58,7 +58,8 @@ Behavior* IdleBehavior::execute() {
 
   ros::Time last_config_check(0.0);
 
-  setGPS(false);
+  // Keep GPS enabled in IDLE so positioning and app status remain available.
+  setGPS(true);
 
   ros::Rate r(25);
   while (ros::ok()) {
