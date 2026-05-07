@@ -8,6 +8,7 @@ find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
   mower_map
   mower_msgs
+  nmea_msgs
   roscpp
   rospy
   sensor_msgs
@@ -23,6 +24,7 @@ catkin_package(
     geometry_msgs
     mower_map
     mower_msgs
+    nmea_msgs
     roscpp
     rospy
     sensor_msgs

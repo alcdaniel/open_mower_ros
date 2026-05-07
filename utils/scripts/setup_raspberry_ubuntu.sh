@@ -525,6 +525,29 @@ setup_mower_config() {
   _ntrip_sed OM_NTRIP_ENDPOINT  VRS3M
   _ntrip_sed OM_NTRIP_RECONNECT_WAIT_SECONDS 5
   _ntrip_sed OM_NTRIP_RECONNECT_MAX          99999
+
+  # ── GPS defaults for USB u-blox ZED-F9P on Raspberry Pi ────────────────────
+  if grep -qE '^[#[:space:]]*export OM_GPS_PROTOCOL=' "${config}"; then
+    sed -i -E 's|^[#[:space:]]*export OM_GPS_PROTOCOL=.*|export OM_GPS_PROTOCOL=UBX|' "${config}"
+  else
+    echo 'export OM_GPS_PROTOCOL=UBX' >> "${config}"
+  fi
+  if grep -qE '^[#[:space:]]*export OM_GPS_PORT=' "${config}"; then
+    sed -i -E 's|^[#[:space:]]*export OM_GPS_PORT=.*|export OM_GPS_PORT="/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00"|' "${config}"
+  else
+    echo 'export OM_GPS_PORT="/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00"' >> "${config}"
+  fi
+  if grep -qE '^[#[:space:]]*export OM_USE_RELATIVE_POSITION=' "${config}"; then
+    sed -i -E 's|^[#[:space:]]*export OM_USE_RELATIVE_POSITION=.*|export OM_USE_RELATIVE_POSITION=False|' "${config}"
+  else
+    echo 'export OM_USE_RELATIVE_POSITION=False' >> "${config}"
+  fi
+  if grep -qE '^[#[:space:]]*export OM_USE_NTRIP=' "${config}"; then
+    sed -i -E 's|^[#[:space:]]*export OM_USE_NTRIP=.*|export OM_USE_NTRIP=True|' "${config}"
+  else
+    echo 'export OM_USE_NTRIP=True' >> "${config}"
+  fi
+
   # Only set user/password if they still hold the old default placeholder values
   if grep -qE "^export OM_NTRIP_USER=(gps|CHANGE_ME)$" "${config}"; then
     sed -i "s|^export OM_NTRIP_USER=.*|export OM_NTRIP_USER=CHANGE_ME|" "${config}"

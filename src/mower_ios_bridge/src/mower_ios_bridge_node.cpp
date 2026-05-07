@@ -51,6 +51,7 @@
 #include <mower_msgs/Power.h>
 #include <mower_msgs/Status.h>
 #include <mower_msgs/HighLevelControlSrv.h>
+#include <nmea_msgs/Sentence.h>
 #include <XmlRpcValue.h>
 #include <ros/ros.h>
 #include <sensor_msgs/Imu.h>
@@ -160,6 +161,8 @@ struct StateSnapshot {
   bool has_left_esc = false;
   bool has_right_esc = false;
   bool has_pose = false;
+  bool has_gps_llh = false;
+  bool has_gps_alt = false;
 
   mower_msgs::HighLevelStatus high_level;
   mower_msgs::Status low_level;
@@ -168,6 +171,9 @@ struct StateSnapshot {
   mower_msgs::ESCStatus left_esc;
   mower_msgs::ESCStatus right_esc;
   xbot_msgs::AbsolutePose pose;
+  double gps_lat = 0.0;
+  double gps_lon = 0.0;
+  double gps_alt = 0.0;
 
   double high_level_seen = 0.0;
   double low_level_seen = 0.0;
@@ -176,6 +182,7 @@ struct StateSnapshot {
   double left_esc_seen = 0.0;
   double right_esc_seen = 0.0;
   double pose_seen = 0.0;
+  double gps_llh_seen = 0.0;
 
   std::array<int, 3> sonar{{999, 999, 999}};
   bool bumper = false;
@@ -268,6 +275,8 @@ class MowerIosBridgeNode {
     sub_right_esc_ = nh_.subscribe(
         "/ll/diff_drive/right_esc_status", 1, &MowerIosBridgeNode::cbRightEsc, this);
     sub_pose_ = nh_.subscribe("/xbot_positioning/xb_pose", 1, &MowerIosBridgeNode::cbPose, this);
+    sub_gps_nmea_ =
+        nh_.subscribe("/ll/position/gps/nmea", 3, &MowerIosBridgeNode::cbGpsNmea, this);
 
     sub_sonar_front_ = nh_.subscribe<sensor_msgs::Range>(
         "/mega/sonar/front", 1,
@@ -391,6 +400,7 @@ class MowerIosBridgeNode {
   ros::Subscriber sub_left_esc_;
   ros::Subscriber sub_right_esc_;
   ros::Subscriber sub_pose_;
+  ros::Subscriber sub_gps_nmea_;
   ros::Subscriber sub_sonar_front_;
   ros::Subscriber sub_sonar_left_;
   ros::Subscriber sub_sonar_right_;
@@ -471,6 +481,78 @@ class MowerIosBridgeNode {
     state_.pose = *msg;
     state_.has_pose = true;
     state_.pose_seen = wallNowSec();
+  }
+
+  static std::vector<std::string> splitNmeaSentence(const std::string& sentence) {
+    std::vector<std::string> fields;
+    std::string current;
+    for (char c : sentence) {
+      if (c == ',') {
+        fields.push_back(current);
+        current.clear();
+      } else {
+        current.push_back(c);
+      }
+    }
+    fields.push_back(current);
+    return fields;
+  }
+
+  static std::optional<double> parseNmeaCoordinate(const std::string& raw, const std::string& hemi, bool lat) {
+    if (raw.empty() || hemi.empty()) return std::nullopt;
+    int deg_digits = lat ? 2 : 3;
+    if (static_cast<int>(raw.size()) <= deg_digits) return std::nullopt;
+    try {
+      const double deg = std::stod(raw.substr(0, static_cast<std::size_t>(deg_digits)));
+      const double minutes = std::stod(raw.substr(static_cast<std::size_t>(deg_digits)));
+      double value = deg + minutes / 60.0;
+      const char h = static_cast<char>(std::toupper(static_cast<unsigned char>(hemi[0])));
+      if (h == 'S' || h == 'W') value = -value;
+      return value;
+    } catch (...) {
+      return std::nullopt;
+    }
+  }
+
+  void cbGpsNmea(const nmea_msgs::Sentence::ConstPtr& msg) {
+    const std::string& s = msg->sentence;
+    if (s.empty() || s[0] != '$') return;
+    const std::size_t star = s.find('*');
+    const std::string payload = s.substr(0, star);
+    const std::vector<std::string> fields = splitNmeaSentence(payload);
+    if (fields.empty()) return;
+    const std::string& head = fields[0];
+    bool parsed = false;
+    std::optional<double> lat;
+    std::optional<double> lon;
+    std::optional<double> alt;
+
+    if (head.size() >= 6 && head.substr(head.size() - 3) == "GGA" && fields.size() > 9) {
+      lat = parseNmeaCoordinate(fields[2], fields[3], true);
+      lon = parseNmeaCoordinate(fields[4], fields[5], false);
+      if (!fields[9].empty()) {
+        try {
+          alt = std::stod(fields[9]);
+        } catch (...) {
+        }
+      }
+      parsed = true;
+    } else if (head.size() >= 6 && head.substr(head.size() - 3) == "RMC" && fields.size() > 6) {
+      lat = parseNmeaCoordinate(fields[3], fields[4], true);
+      lon = parseNmeaCoordinate(fields[5], fields[6], false);
+      parsed = true;
+    }
+
+    if (!parsed || !lat.has_value() || !lon.has_value()) return;
+    std::lock_guard<std::recursive_mutex> lock(state_mutex_);
+    state_.gps_lat = *lat;
+    state_.gps_lon = *lon;
+    if (alt.has_value()) {
+      state_.gps_alt = *alt;
+      state_.has_gps_alt = true;
+    }
+    state_.has_gps_llh = true;
+    state_.gps_llh_seen = wallNowSec();
   }
 
   void cbSonar(const sensor_msgs::Range::ConstPtr& msg, int idx) {
@@ -874,6 +956,10 @@ class MowerIosBridgeNode {
     const bool rain_detected =
         (snap.has_low_level && snap.low_level.rain_detected) || snap.rain_mega;
 
+    const std::string gps_fix_type = gpsFixTypeOrNone(snap);
+    const std::string gps_fix_label = gpsFixLabel(gps_fix_type);
+    const bool gps_llh_fresh = snap.has_gps_llh && (wallNowSec() - snap.gps_llh_seen) <= 10.0;
+
     return json{
         {"connection", snap.mega_connected ? "connected" : "disconnected"},
         {"connectionMessage", snap.mega_connection_status},
@@ -903,6 +989,12 @@ class MowerIosBridgeNode {
         {"alarm1Enabled", snap.tilt},
         {"alarm2Enabled", rain_detected},
         {"alarm3Enabled", false},
+        {"gpsHasPose", snap.has_pose},
+        {"gpsFixType", gps_fix_type},
+        {"gpsFixLabel", gps_fix_label},
+        {"gpsPositionAccuracy", snap.has_pose ? static_cast<double>(snap.pose.position_accuracy) : -1.0},
+        {"gpsLat", gps_llh_fresh ? json(snap.gps_lat) : json(nullptr)},
+        {"gpsLon", gps_llh_fresh ? json(snap.gps_lon) : json(nullptr)},
         {"lastUpdated", nowMs()},
     };
   }
@@ -1192,6 +1284,7 @@ class MowerIosBridgeNode {
 
   json mapPayload() {
     const StateSnapshot snap = snapshot();
+    const bool gps_llh_fresh = snap.has_gps_llh && (wallNowSec() - snap.gps_llh_seen) <= 10.0;
     json parsed = nullptr;
     if (!snap.map_json.empty()) {
       parsed = json::parse(snap.map_json, nullptr, false);
@@ -1202,18 +1295,32 @@ class MowerIosBridgeNode {
         {"raw", parsed.is_null() && !snap.map_json.empty() ? json(snap.map_json) : json(nullptr)},
         {"receivedAt", static_cast<std::int64_t>(snap.map_received_at * 1000.0)},
         {"hasMap", !parsed.is_null()},
+        {"pose", json{
+            {"hasPose", snap.has_pose},
+            {"x", snap.has_pose ? json(static_cast<double>(snap.pose.pose.pose.position.x)) : json(nullptr)},
+            {"y", snap.has_pose ? json(static_cast<double>(snap.pose.pose.pose.position.y)) : json(nullptr)},
+            {"fixType", gpsFixTypeOrNone(snap)},
+            {"positionAccuracy", snap.has_pose ? json(static_cast<double>(snap.pose.position_accuracy)) : json(nullptr)},
+            {"lat", gps_llh_fresh ? json(snap.gps_lat) : json(nullptr)},
+            {"lon", gps_llh_fresh ? json(snap.gps_lon) : json(nullptr)},
+            {"altitudeM", (gps_llh_fresh && snap.has_gps_alt) ? json(snap.gps_alt) : json(nullptr)},
+        }},
     };
   }
 
   json posePayload() {
     const StateSnapshot snap = snapshot();
     if (!snap.has_pose) return json{{"hasPose", false}};
+    const bool gps_llh_fresh = snap.has_gps_llh && (wallNowSec() - snap.gps_llh_seen) <= 10.0;
     double heading_deg = snap.pose.vehicle_heading * 180.0 / M_PI;
     if (heading_deg < 0.0) heading_deg += 360.0;
     return json{
         {"hasPose", true},
         {"x", static_cast<double>(snap.pose.pose.pose.position.x)},
         {"y", static_cast<double>(snap.pose.pose.pose.position.y)},
+        {"lat", gps_llh_fresh ? json(snap.gps_lat) : json(nullptr)},
+        {"lon", gps_llh_fresh ? json(snap.gps_lon) : json(nullptr)},
+        {"altitudeM", (gps_llh_fresh && snap.has_gps_alt) ? json(snap.gps_alt) : json(nullptr)},
         {"headingDeg", heading_deg},
         {"fixType", gpsFixTypeOrNone(snap)},
         {"positionAccuracy", static_cast<double>(snap.pose.position_accuracy)},
@@ -1364,6 +1471,13 @@ class MowerIosBridgeNode {
   // ----- Business logic -----
 
   std::string gpsFixType(const xbot_msgs::AbsolutePose& pose) const {
+    if (pose.source == xbot_msgs::AbsolutePose::SOURCE_GPS) {
+      if ((pose.flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FIXED) != 0) return "fixed";
+      if ((pose.flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK_FLOAT) != 0) return "float";
+      if ((pose.flags & xbot_msgs::AbsolutePose::FLAG_GPS_RTK) != 0) return "float";
+      return "single";
+    }
+
     const bool has_recent =
         (pose.flags & xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE) != 0;
     if (!has_recent) return "none";
@@ -1371,6 +1485,13 @@ class MowerIosBridgeNode {
     if (accuracy <= rec_fixed_accuracy_m_) return "fixed";
     if (accuracy <= rec_float_accuracy_m_) return "float";
     return "single";
+  }
+
+  static std::string gpsFixLabel(const std::string& fix_type) {
+    if (fix_type == "fixed") return "RTK Fixed";
+    if (fix_type == "float") return "RTK Float";
+    if (fix_type == "single") return "GPS";
+    return "No GPS";
   }
 
   std::string gpsFixTypeOrNone(const StateSnapshot& snap) const {
