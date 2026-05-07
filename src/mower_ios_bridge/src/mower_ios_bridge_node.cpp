@@ -2350,7 +2350,17 @@ class MowerIosBridgeNode {
     int sock = ::socket(AF_INET, SOCK_DGRAM, 0);
     if (sock < 0) return;
     int enable = 1;
+    ::setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable));
     ::setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &enable, sizeof(enable));
+
+    sockaddr_in local{};
+    local.sin_family = AF_INET;
+    local.sin_port = htons(static_cast<uint16_t>(beacon_port_));
+    local.sin_addr.s_addr = htonl(INADDR_ANY);
+    if (::bind(sock, reinterpret_cast<sockaddr*>(&local), sizeof(local)) < 0) {
+      ROS_WARN("[ios_bridge] UDP beacon bind failed on port %d. Continuing with ephemeral source port.",
+               beacon_port_);
+    }
 
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
