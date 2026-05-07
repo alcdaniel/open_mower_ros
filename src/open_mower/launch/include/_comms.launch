@@ -37,6 +37,30 @@
                 <param name="heartbeat_hz"     value="$(optenv OM_HB_HZ 3.0)"/>
             </node>
         </group>
+
+        <!-- GPS driver for Mega platform (same output topics as v1). -->
+        <node pkg="xbot_driver_gps" type="driver_gps_node" name="gps"
+                ns="ll/services"
+                output="screen"
+                respawn="true"
+                respawn_delay="5"
+                unless="$(optenv OM_NO_GPS False)">
+            <!-- Explicit params for v2/custom setups where comms_gps_params.yaml is not loaded -->
+            <param name="serial_port" value="$(optenv OM_GPS_PORT /dev/ttyACM0)"/>
+            <param name="baudrate" value="$(optenv OM_GPS_BAUDRATE 921600)"/>
+            <param name="protocol" value="$(optenv OM_GPS_PROTOCOL UBX)"/>
+            <param name="device_type" value="$(optenv OM_GPS_DEVICE_TYPE serial)"/>
+            <param name="mode" value="absolute" unless="$(optenv OM_USE_RELATIVE_POSITION False)"/>
+            <param name="mode" value="relative" if="$(optenv OM_USE_RELATIVE_POSITION False)"/>
+            <param name="datum_lat" value="$(optenv OM_DATUM_LAT 0.0)" unless="$(optenv OM_USE_RELATIVE_POSITION False)"/>
+            <param name="datum_long" value="$(optenv OM_DATUM_LONG 0.0)" unless="$(optenv OM_USE_RELATIVE_POSITION False)"/>
+            <param name="datum_height" value="0" unless="$(optenv OM_USE_RELATIVE_POSITION False)"/>
+
+            <remap from="/ll/services/rtcm" to="/ll/position/gps/rtcm"/>
+            <remap from="/nmea" to="/ll/position/gps/nmea"/>
+            <remap from="~xb_pose" to="/ll/position/gps"/>
+            <remap from="~wheel_ticks" to="/mower/wheel_ticks"/>
+        </node>
     </group>
     <group unless="$(optenv OM_NO_GPS False)">
     <!-- NTRIP for both: v1 and v2 -->
