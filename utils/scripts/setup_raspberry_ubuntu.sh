@@ -31,6 +31,8 @@ Prepares an Ubuntu Raspberry Pi for this OpenMower ROS workspace:
   - installs a systemd Wi-Fi auto-connect service
   - configures Raspberry UART for the Mega bridge (or run
     ./utils/scripts/configure_raspberry_uart.sh standalone)
+  - applies GPS/NTRIP defaults early (or run
+    ./utils/scripts/configure_gps_ntrip_defaults.sh standalone)
 
 Options:
   --skip-ros-install       Do not add/install ROS apt packages
@@ -111,6 +113,19 @@ configure_uart_for_mega_bridge() {
   fi
   echo "Running UART-only setup script: ${uart_script}"
   "${uart_script}"
+}
+
+configure_mower_config_early() {
+  local gps_script="${SCRIPT_DIR}/configure_gps_ntrip_defaults.sh"
+  if [[ ! -f "${gps_script}" ]]; then
+    echo "Missing GPS/NTRIP defaults script: ${gps_script}" >&2
+    exit 1
+  fi
+  if [[ ! -x "${gps_script}" ]]; then
+    chmod +x "${gps_script}"
+  fi
+  echo "Running GPS/NTRIP defaults script: ${gps_script}"
+  "${gps_script}"
 }
 
 remove_conflicting_python_ros_packages() {
@@ -374,6 +389,7 @@ fi
 
 sudo -v
 configure_uart_for_mega_bridge
+configure_mower_config_early
 
 repair_apt_state
 
@@ -522,7 +538,7 @@ setup_mower_config() {
   _ntrip_sed OM_USE_NTRIP       True
   _ntrip_sed OM_NTRIP_HOSTNAME  192.148.213.42
   _ntrip_sed OM_NTRIP_PORT      2101
-  _ntrip_sed OM_NTRIP_ENDPOINT  VRS3M
+  _ntrip_sed OM_NTRIP_ENDPOINT  XIXO3M
   _ntrip_sed OM_NTRIP_RECONNECT_WAIT_SECONDS 5
   _ntrip_sed OM_NTRIP_RECONNECT_MAX          99999
 
@@ -536,6 +552,11 @@ setup_mower_config() {
     sed -i -E 's|^[#[:space:]]*export OM_GPS_PORT=.*|export OM_GPS_PORT="/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00"|' "${config}"
   else
     echo 'export OM_GPS_PORT="/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00"' >> "${config}"
+  fi
+  if grep -qE '^[#[:space:]]*export OM_GPS_BAUDRATE=' "${config}"; then
+    sed -i -E 's|^[#[:space:]]*export OM_GPS_BAUDRATE=.*|export OM_GPS_BAUDRATE="115200"|' "${config}"
+  else
+    echo 'export OM_GPS_BAUDRATE="115200"' >> "${config}"
   fi
   if grep -qE '^[#[:space:]]*export OM_USE_RELATIVE_POSITION=' "${config}"; then
     sed -i -E 's|^[#[:space:]]*export OM_USE_RELATIVE_POSITION=.*|export OM_USE_RELATIVE_POSITION=False|' "${config}"
@@ -603,7 +624,7 @@ ll:
       language: en
       volume: -1
     gps:
-      baud_rate: 921600
+      baud_rate: 115200
       protocol: UBX
       datum_height: 0
       absolute_coords: true
