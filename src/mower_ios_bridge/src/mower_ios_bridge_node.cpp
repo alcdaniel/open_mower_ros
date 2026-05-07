@@ -943,6 +943,22 @@ class MowerIosBridgeNode {
     return "unknown";
   }
 
+  std::string emergencyReasonText(const StateSnapshot& snap) const {
+    if (snap.has_emergency && (snap.emergency.active_emergency || snap.emergency.latched_emergency)) {
+      if (!snap.emergency.reason.empty()) return snap.emergency.reason;
+      return "emergency_active";
+    }
+    return "";
+  }
+
+  std::string degradationReasonText(const StateSnapshot& snap) const {
+    const double now = wallNowSec();
+    constexpr double pose_timeout_s = 1.0;
+    if (!snap.has_pose) return "pose_missing";
+    if ((now - snap.pose_seen) > pose_timeout_s) return "pose_timeout";
+    return "";
+  }
+
   json statusPayload() {
     const StateSnapshot snap = snapshot();
     const bool emergency_active =
@@ -971,6 +987,8 @@ class MowerIosBridgeNode {
     const std::string gps_fix_type = gpsFixTypeOrNone(snap);
     const std::string gps_fix_label = gpsFixLabel(gps_fix_type);
     const bool gps_llh_fresh = snap.has_gps_llh && (wallNowSec() - snap.gps_llh_seen) <= 10.0;
+    const std::string emergency_reason = emergencyReasonText(snap);
+    const std::string degradation_reason = degradationReasonText(snap);
 
     return json{
         {"connection", snap.mega_connected ? "connected" : "disconnected"},
@@ -1005,6 +1023,10 @@ class MowerIosBridgeNode {
         {"gpsFixType", gps_fix_type},
         {"gpsFixLabel", gps_fix_label},
         {"gpsPositionAccuracy", snap.has_pose ? static_cast<double>(snap.pose.position_accuracy) : -1.0},
+        {"emergencyActive", emergency_active},
+        {"emergencyLatched", snap.has_emergency ? snap.emergency.latched_emergency : false},
+        {"emergencyReason", emergency_reason},
+        {"degradationReason", degradation_reason},
         {"gpsLat", gps_llh_fresh ? json(snap.gps_lat) : json(nullptr)},
         {"gpsLon", gps_llh_fresh ? json(snap.gps_lon) : json(nullptr)},
         {"lastUpdated", nowMs()},
@@ -1037,6 +1059,10 @@ class MowerIosBridgeNode {
     // Derive availability from last_seen timestamps and mega settings
     const double now = wallNowSec();
     constexpr double stale_s = 10.0;
+    const bool emergency_active =
+        snap.has_emergency && (snap.emergency.active_emergency || snap.emergency.latched_emergency);
+    const std::string emergency_reason = emergencyReasonText(snap);
+    const std::string degradation_reason = degradationReasonText(snap);
 
     auto megaOn = [&](const std::string& key) -> int {
       // returns 1=on, 0=off, -1=unknown
@@ -1123,6 +1149,10 @@ class MowerIosBridgeNode {
         {"tipOver", snap.tilt},
         {"gpsInsideFence", gpsFixTypeOrNone(snap) != "none"},
         {"gpsFixType", gpsFixTypeOrNone(snap)},
+        {"emergencyActive", emergency_active},
+        {"emergencyLatched", snap.has_emergency ? snap.emergency.latched_emergency : false},
+        {"emergencyReason", emergency_reason},
+        {"degradationReason", degradation_reason},
         {"compassHeading", heading},
         {"compassError", compass_error},
         {"megaCompassDeg", snap.mega_compass_deg},
