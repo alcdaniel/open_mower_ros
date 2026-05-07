@@ -29,6 +29,8 @@ Prepares an Ubuntu Raspberry Pi for this OpenMower ROS workspace:
   - creates mower_config.sh from the example when missing
   - creates a local .env for Wi-Fi/NTRIP settings when missing
   - installs a systemd Wi-Fi auto-connect service
+  - configures Raspberry UART for the Mega bridge (or run
+    ./utils/scripts/configure_raspberry_uart.sh standalone)
 
 Options:
   --skip-ros-install       Do not add/install ROS apt packages
@@ -99,176 +101,16 @@ configure_uart_for_mega_bridge() {
     return
   fi
 
-  local boot_cfg="/boot/firmware/config.txt"
-  local usercfg="/boot/firmware/usercfg.txt"
-  local cmdline_cfg="/boot/firmware/cmdline.txt"
-  local needs_reboot=0
-  local serial0_target=""
-
-  echo "Configuring Raspberry UART for Mega bridge..."
-
-  upsert_boot_setting() {
-    local target_file="$1"
-    local key="$2"
-    local value="$3"
-    local tmp_file changed
-    tmp_file="$(mktemp)"
-    changed=0
-
-    if [[ -f "${target_file}" ]]; then
-      awk -v key="${key}" -v value="${value}" '
-        BEGIN {
-          done = 0;
-          changed = 0;
-          target = key "=" value;
-        }
-        {
-          if ($0 ~ "^[[:space:]]*#?[[:space:]]*" key "=") {
-            if (done == 0) {
-              if ($0 != target) {
-                changed = 1;
-              }
-              print target;
-              done = 1;
-            } else {
-              changed = 1;
-            }
-          } else {
-            print;
-          }
-        }
-        END {
-          if (done == 0) {
-            print target;
-            changed = 1;
-          }
-          print changed > "/dev/stderr";
-        }
-      ' "${target_file}" >"${tmp_file}" 2>"${tmp_file}.changed"
-      changed="$(tr -d '\n\r' <"${tmp_file}.changed" || true)"
-      rm -f "${tmp_file}.changed"
-    else
-      echo "${key}=${value}" >"${tmp_file}"
-      changed=1
-    fi
-
-    if [[ "${changed}" == "1" ]]; then
-      sudo install -m 0644 "${tmp_file}" "${target_file}"
-      needs_reboot=1
-    fi
-    rm -f "${tmp_file}"
-  }
-
-  remove_serial_console_tokens() {
-    local file_path="$1"
-    local old_cmdline new_cmdline token
-    old_cmdline="$(cat "${file_path}")"
-    new_cmdline=""
-
-    for token in ${old_cmdline}; do
-      case "${token}" in
-        console=serial0,115200|console=ttyAMA0,115200|console=ttyS0,115200)
-          ;;
-        *)
-          if [[ -z "${new_cmdline}" ]]; then
-            new_cmdline="${token}"
-          else
-            new_cmdline="${new_cmdline} ${token}"
-          fi
-          ;;
-      esac
-    done
-
-    if [[ "${new_cmdline}" != "${old_cmdline}" ]]; then
-      echo "${new_cmdline}" | sudo tee "${file_path}" >/dev/null
-      needs_reboot=1
-      echo "Removed serial console from ${file_path}."
-    fi
-  }
-
-  disable_and_mask_service() {
-    local unit="$1"
-    sudo systemctl disable --now "${unit}" >/dev/null 2>&1 || true
-    sudo systemctl mask "${unit}" >/dev/null 2>&1 || true
-  }
-
-  # Keep this value in both config.txt and usercfg.txt for Ubuntu images that
-  # may source one or both files differently across releases.
-  upsert_boot_setting "${boot_cfg}" "enable_uart" "1"
-
-  # Keep Raspberry UART/Bluetooth routing stable for ttyAMA0 use.
-  upsert_boot_setting "${usercfg}" "enable_uart" "1"
-  upsert_boot_setting "${usercfg}" "dtoverlay" "disable-bt"
-
-  # Remove serial console arguments that can still claim UART at boot.
-  if [[ -f "${cmdline_cfg}" ]]; then
-    remove_serial_console_tokens "${cmdline_cfg}"
-  else
-    echo "Warning: ${cmdline_cfg} not found. Skipping cmdline UART-console cleanup."
+  local uart_script="${SCRIPT_DIR}/configure_raspberry_uart.sh"
+  if [[ ! -f "${uart_script}" ]]; then
+    echo "Missing UART setup script: ${uart_script}" >&2
+    exit 1
   fi
-
-  # Ensure no login console grabs the UART.
-  disable_and_mask_service serial-getty@ttyAMA0.service
-  disable_and_mask_service serial-getty@ttyS0.service
-  disable_and_mask_service serial-getty@serial0.service
-  # If Bluetooth modem init is still enabled, it can steal UART0 on some boots.
-  disable_and_mask_service hciuart.service
-
-  # Force GPIO14/15 into UART0 ALT0 mode now (and persist via systemd service).
-  if command -v raspi-gpio >/dev/null 2>&1; then
-    sudo raspi-gpio set 14 a0 || true
-    sudo raspi-gpio set 15 a0 || true
-
-    local uart_pins_service="/etc/systemd/system/openmower-uart-pins.service"
-    sudo bash -c "cat > '${uart_pins_service}' << 'UART_PINS_EOF'
-[Unit]
-Description=Force UART0 pinmux on GPIO14/15 for OpenMower
-After=local-fs.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/bin/raspi-gpio set 14 a0
-ExecStart=/usr/bin/raspi-gpio set 15 a0
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-UART_PINS_EOF
-"
-    sudo systemctl daemon-reload
-    sudo systemctl enable openmower-uart-pins.service >/dev/null 2>&1 || true
-    sudo systemctl start openmower-uart-pins.service >/dev/null 2>&1 || true
-  else
-    echo "Warning: raspi-gpio not found; cannot force GPIO14/15 ALT0 automatically."
+  if [[ ! -x "${uart_script}" ]]; then
+    chmod +x "${uart_script}"
   fi
-
-  if [[ -e /dev/serial0 ]]; then
-    serial0_target="$(readlink -f /dev/serial0 || true)"
-    if [[ -n "${serial0_target}" ]]; then
-      echo "serial0 currently points to: ${serial0_target}"
-    fi
-  fi
-
-  # If serial0 still resolves to mini-uart, lock core clock to keep UART baud stable.
-  if [[ "${serial0_target}" == "/dev/ttyS0" ]]; then
-    upsert_boot_setting "${usercfg}" "core_freq" "250"
-    echo "Detected /dev/serial0 -> /dev/ttyS0. Set core_freq=250 for mini-uart stability."
-  fi
-
-  # Ensure current user can open serial devices without sudo.
-  if id -nG "${USER}" | grep -qw dialout; then
-    :
-  else
-    sudo usermod -aG dialout "${USER}"
-    echo "Added ${USER} to dialout group (logout/login required)."
-  fi
-
-  echo "UART device snapshot:"
-  ls -l /dev/serial0 /dev/serial1 /dev/ttyAMA* /dev/ttyS* 2>/dev/null || true
-
-  if [[ "${needs_reboot}" -eq 1 ]]; then
-    echo "UART boot config changed. Reboot required to apply UART settings."
-  fi
+  echo "Running UART-only setup script: ${uart_script}"
+  "${uart_script}"
 }
 
 remove_conflicting_python_ros_packages() {
