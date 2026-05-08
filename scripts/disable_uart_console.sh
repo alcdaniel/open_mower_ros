@@ -78,12 +78,14 @@ echo "    ✓ serial-getty/hciuart services disabled + masked"
 if command -v rpi-eeprom-config >/dev/null 2>&1; then
     TMP_EEPROM_CFG="$(mktemp)"
     if rpi-eeprom-config > "$TMP_EEPROM_CFG" 2>/dev/null; then
-        if grep -Eq '^[[:space:]]*BOOT_UART=1[[:space:]]*$' "$TMP_EEPROM_CFG"; then
-            sed -E 's/^[[:space:]]*BOOT_UART=1[[:space:]]*$/BOOT_UART=0/' "$TMP_EEPROM_CFG" > "${TMP_EEPROM_CFG}.new"
+        if grep -Eq '^[[:space:]]*BOOT_UART=' "$TMP_EEPROM_CFG"; then
+            sed -E 's/^[[:space:]]*BOOT_UART=.*/BOOT_UART=0/' "$TMP_EEPROM_CFG" > "${TMP_EEPROM_CFG}.new"
             mv "${TMP_EEPROM_CFG}.new" "$TMP_EEPROM_CFG"
-            rpi-eeprom-config --apply "$TMP_EEPROM_CFG" >/dev/null 2>&1 || true
-            echo "    ✓ BOOT_UART set to 0 in EEPROM"
+        else
+            printf '\nBOOT_UART=0\n' >> "$TMP_EEPROM_CFG"
         fi
+        rpi-eeprom-config --apply "$TMP_EEPROM_CFG" >/dev/null 2>&1 || true
+        echo "    ✓ BOOT_UART forced to 0 in EEPROM"
     fi
     rm -f "$TMP_EEPROM_CFG" "${TMP_EEPROM_CFG}.new" 2>/dev/null || true
 fi
