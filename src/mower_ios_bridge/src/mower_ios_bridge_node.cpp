@@ -727,7 +727,15 @@ class MowerIosBridgeNode {
 
   void cbSampleRecording(const ros::TimerEvent&) {
     std::lock_guard<std::recursive_mutex> lock(state_mutex_);
-    if (!state_.recording.has_value() || !state_.has_pose) return;
+    if (!state_.recording.has_value()) return;
+
+    const xbot_msgs::AbsolutePose* sample_pose = nullptr;
+    if (state_.has_pose) {
+      sample_pose = &state_.pose;
+    } else if (state_.has_raw_gps) {
+      sample_pose = &state_.raw_gps;
+    }
+    if (sample_pose == nullptr) return;
 
     RecordingSession& rec = *state_.recording;
     if (!recordingAllowedLocked()) {
@@ -740,7 +748,7 @@ class MowerIosBridgeNode {
       return;
     }
 
-    const std::string fix = gpsFixType(state_.pose);
+    const std::string fix = gpsFixType(*sample_pose);
     rec.last_fix = fix;
     if (rec_require_rtk_fixed_ && fix != "fixed") {
       const double now = wallNowSec();
@@ -762,8 +770,8 @@ class MowerIosBridgeNode {
     rec.has_bad_fix_since = false;
     if (rec.paused) return;
 
-    const double x = static_cast<double>(state_.pose.pose.pose.position.x);
-    const double y = static_cast<double>(state_.pose.pose.pose.position.y);
+    const double x = static_cast<double>(sample_pose->pose.pose.position.x);
+    const double y = static_cast<double>(sample_pose->pose.pose.position.y);
     if (!rec.points.empty()) {
       const PointXY& last = rec.points.back();
       if (std::hypot(x - last.x, y - last.y) < rec_min_distance_m_) return;
@@ -954,8 +962,10 @@ class MowerIosBridgeNode {
   std::string degradationReasonText(const StateSnapshot& snap) const {
     const double now = wallNowSec();
     constexpr double pose_timeout_s = 1.0;
-    if (!snap.has_pose) return "pose_missing";
-    if ((now - snap.pose_seen) > pose_timeout_s) return "pose_timeout";
+    constexpr double raw_gps_timeout_s = 10.0;
+    const bool raw_gps_available = snap.has_raw_gps && (now - snap.raw_gps_seen) <= raw_gps_timeout_s;
+    if (!snap.has_pose) return raw_gps_available ? "pose_fusion_missing" : "pose_missing";
+    if ((now - snap.pose_seen) > pose_timeout_s) return raw_gps_available ? "pose_fusion_timeout" : "pose_timeout";
     return "";
   }
 
@@ -986,6 +996,7 @@ class MowerIosBridgeNode {
 
     const std::string gps_fix_type = gpsFixTypeOrNone(snap);
     const std::string gps_fix_label = gpsFixLabel(gps_fix_type);
+    const bool has_ui_pose = uiPoseSource(snap) != nullptr;
     const bool gps_llh_fresh = snap.has_gps_llh && (wallNowSec() - snap.gps_llh_seen) <= 10.0;
     const std::string emergency_reason = emergencyReasonText(snap);
     const std::string degradation_reason = degradationReasonText(snap);
@@ -1019,7 +1030,7 @@ class MowerIosBridgeNode {
         {"alarm1Enabled", snap.tilt},
         {"alarm2Enabled", rain_detected},
         {"alarm3Enabled", false},
-        {"gpsHasPose", snap.has_pose},
+        {"gpsHasPose", has_ui_pose},
         {"gpsFixType", gps_fix_type},
         {"gpsFixLabel", gps_fix_label},
         {"gpsPositionAccuracy", snap.has_pose ? static_cast<double>(snap.pose.position_accuracy) : -1.0},
@@ -1328,6 +1339,8 @@ class MowerIosBridgeNode {
 
   json mapPayload() {
     const StateSnapshot snap = snapshot();
+    const xbot_msgs::AbsolutePose* ui_pose = uiPoseSource(snap);
+    const bool has_ui_pose = ui_pose != nullptr;
     const bool gps_llh_fresh = snap.has_gps_llh && (wallNowSec() - snap.gps_llh_seen) <= 10.0;
     json parsed = nullptr;
     if (!snap.map_json.empty()) {
@@ -1340,11 +1353,11 @@ class MowerIosBridgeNode {
         {"receivedAt", static_cast<std::int64_t>(snap.map_received_at * 1000.0)},
         {"hasMap", !parsed.is_null()},
         {"pose", json{
-            {"hasPose", snap.has_pose},
-            {"x", snap.has_pose ? json(static_cast<double>(snap.pose.pose.pose.position.x)) : json(nullptr)},
-            {"y", snap.has_pose ? json(static_cast<double>(snap.pose.pose.pose.position.y)) : json(nullptr)},
+            {"hasPose", has_ui_pose},
+            {"x", has_ui_pose ? json(static_cast<double>(ui_pose->pose.pose.position.x)) : json(nullptr)},
+            {"y", has_ui_pose ? json(static_cast<double>(ui_pose->pose.pose.position.y)) : json(nullptr)},
             {"fixType", gpsFixTypeOrNone(snap)},
-            {"positionAccuracy", snap.has_pose ? json(static_cast<double>(snap.pose.position_accuracy)) : json(nullptr)},
+            {"positionAccuracy", has_ui_pose ? json(static_cast<double>(ui_pose->position_accuracy)) : json(nullptr)},
             {"lat", gps_llh_fresh ? json(snap.gps_lat) : json(nullptr)},
             {"lon", gps_llh_fresh ? json(snap.gps_lon) : json(nullptr)},
             {"altitudeM", (gps_llh_fresh && snap.has_gps_alt) ? json(snap.gps_alt) : json(nullptr)},
@@ -1354,20 +1367,36 @@ class MowerIosBridgeNode {
 
   json posePayload() {
     const StateSnapshot snap = snapshot();
-    if (!snap.has_pose) return json{{"hasPose", false}};
+    const xbot_msgs::AbsolutePose* ui_pose = uiPoseSource(snap);
+    const bool has_ui_pose = ui_pose != nullptr;
     const bool gps_llh_fresh = snap.has_gps_llh && (wallNowSec() - snap.gps_llh_seen) <= 10.0;
-    double heading_deg = snap.pose.vehicle_heading * 180.0 / M_PI;
-    if (heading_deg < 0.0) heading_deg += 360.0;
+    if (!has_ui_pose) {
+      return json{
+          {"hasPose", false},
+          {"fixType", gpsFixTypeOrNone(snap)},
+          {"lat", gps_llh_fresh ? json(snap.gps_lat) : json(nullptr)},
+          {"lon", gps_llh_fresh ? json(snap.gps_lon) : json(nullptr)},
+          {"altitudeM", (gps_llh_fresh && snap.has_gps_alt) ? json(snap.gps_alt) : json(nullptr)},
+      };
+    }
+
+    json heading_value = nullptr;
+    if (ui_pose->orientation_valid != 0) {
+      double heading_deg = ui_pose->vehicle_heading * 180.0 / M_PI;
+      if (heading_deg < 0.0) heading_deg += 360.0;
+      heading_value = heading_deg;
+    }
+
     return json{
-        {"hasPose", true},
-        {"x", static_cast<double>(snap.pose.pose.pose.position.x)},
-        {"y", static_cast<double>(snap.pose.pose.pose.position.y)},
+        {"hasPose", has_ui_pose},
+        {"x", static_cast<double>(ui_pose->pose.pose.position.x)},
+        {"y", static_cast<double>(ui_pose->pose.pose.position.y)},
         {"lat", gps_llh_fresh ? json(snap.gps_lat) : json(nullptr)},
         {"lon", gps_llh_fresh ? json(snap.gps_lon) : json(nullptr)},
         {"altitudeM", (gps_llh_fresh && snap.has_gps_alt) ? json(snap.gps_alt) : json(nullptr)},
-        {"headingDeg", heading_deg},
+        {"headingDeg", heading_value},
         {"fixType", gpsFixTypeOrNone(snap)},
-        {"positionAccuracy", static_cast<double>(snap.pose.position_accuracy)},
+        {"positionAccuracy", static_cast<double>(ui_pose->position_accuracy)},
     };
   }
 
@@ -1538,9 +1567,21 @@ class MowerIosBridgeNode {
     return "No GPS";
   }
 
+  const xbot_msgs::AbsolutePose* uiPoseSource(const StateSnapshot& snap) const {
+    constexpr double stale_s = 10.0;
+    const double now = wallNowSec();
+    const bool fused_fresh = snap.has_pose && (now - snap.pose_seen) <= stale_s;
+    const bool raw_fresh = snap.has_raw_gps && (now - snap.raw_gps_seen) <= stale_s;
+
+    if (fused_fresh) return &snap.pose;
+    if (raw_fresh) return &snap.raw_gps;
+    if (snap.has_pose) return &snap.pose;
+    if (snap.has_raw_gps) return &snap.raw_gps;
+    return nullptr;
+  }
+
   std::string gpsFixTypeOrNone(const StateSnapshot& snap) const {
-    if (snap.has_pose) return gpsFixType(snap.pose);
-    if (snap.has_raw_gps) return gpsFixType(snap.raw_gps);
+    if (const xbot_msgs::AbsolutePose* pose = uiPoseSource(snap)) return gpsFixType(*pose);
     return "none";
   }
 
