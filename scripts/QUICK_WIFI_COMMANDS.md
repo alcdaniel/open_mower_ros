@@ -26,13 +26,13 @@ chmod 600 ~/open_mower_ros/.env
 Sin relanzar `setup_raspberry_ubuntu.sh`:
 
 ```bash
-bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh
+bash ~/open_mower_ros/scripts/install_wifi_service.sh
 ```
 
 O con sudo si pide:
 
 ```bash
-sudo bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh
+sudo bash ~/open_mower_ros/scripts/install_wifi_service.sh
 ```
 
 ---
@@ -41,7 +41,7 @@ sudo bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh
 
 **Opción A: Script directo**
 ```bash
-bash ~/open_mower_ros/utils/scripts/connect_wifi_from_env.sh
+bash ~/open_mower_ros/scripts/connect_wifi_from_env.sh
 ```
 
 **Opción B: Servicio systemd (si instalado)**
@@ -80,8 +80,8 @@ MOWER_WIFI_PASSWORD="$PASS"
 MOWER_WIFI_CONNECTION_NAME="openmower-wifi"
 EOF
 chmod 600 ~/open_mower_ros/.env && \
-bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh && \
-bash ~/open_mower_ros/utils/scripts/connect_wifi_from_env.sh
+bash ~/open_mower_ros/scripts/install_wifi_service.sh && \
+bash ~/open_mower_ros/scripts/connect_wifi_from_env.sh
 ```
 
 ---
@@ -95,7 +95,7 @@ Cualquier momento:
 nano ~/open_mower_ros/.env
 
 # Reconectar
-bash ~/open_mower_ros/utils/scripts/connect_wifi_from_env.sh
+bash ~/open_mower_ros/scripts/connect_wifi_from_env.sh
 
 # O restart servicio
 sudo systemctl restart openmower-wifi.service
@@ -113,7 +113,7 @@ sudo journalctl -u openmower-wifi.service -f
 sudo systemctl is-enabled openmower-wifi.service
 
 # Si falta: instalar
-bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh
+bash ~/open_mower_ros/scripts/install_wifi_service.sh
 ```
 
 ---

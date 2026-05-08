@@ -37,13 +37,13 @@ workspace dependencies, creates `mower_config.sh` when missing, and builds the
 catkin workspace:
 
 ```bash
-./utils/scripts/setup_raspberry_ubuntu.sh
+./scripts/setup_raspberry_ubuntu.sh
 ```
 
 For a lighter dependency-only pass, use:
 
 ```bash
-./utils/scripts/setup_raspberry_ubuntu.sh --skip-build
+./scripts/setup_raspberry_ubuntu.sh --skip-build
 ```
 
 The script also creates a local `.env` file when it does not exist. This file is

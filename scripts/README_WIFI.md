@@ -13,7 +13,7 @@ Scripts:
 
 ```bash
 cd ~/open_mower_ros
-bash ./utils/scripts/setup_raspberry_ubuntu.sh
+bash ./scripts/setup_raspberry_ubuntu.sh
 ```
 
 Instala automáticamente:
@@ -27,13 +27,13 @@ Instala automáticamente:
 Si ya ejecutaste setup o solo quieres instalar el servicio:
 
 ```bash
-bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh
+bash ~/open_mower_ros/scripts/install_wifi_service.sh
 ```
 
 O con sudo si es necesario:
 
 ```bash
-sudo bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh
+sudo bash ~/open_mower_ros/scripts/install_wifi_service.sh
 ```
 
 ---
@@ -57,7 +57,7 @@ MOWER_WIFI_CONNECTION_NAME="openmower-wifi"
 
 **Opción A: Script directo**
 ```bash
-bash ~/open_mower_ros/utils/scripts/connect_wifi_from_env.sh
+bash ~/open_mower_ros/scripts/connect_wifi_from_env.sh
 ```
 
 **Opción B: Servicio systemd**
@@ -90,7 +90,7 @@ ping 8.8.8.8
 sudo systemctl is-enabled openmower-wifi.service
 
 # Si no está instalado:
-bash ~/open_mower_ros/utils/scripts/install_wifi_service.sh
+bash ~/open_mower_ros/scripts/install_wifi_service.sh
 ```
 
 ---
