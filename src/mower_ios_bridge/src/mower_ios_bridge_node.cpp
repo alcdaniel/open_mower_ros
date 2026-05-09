@@ -229,6 +229,7 @@ class MowerIosBridgeNode {
         auth_token_(pnh_.param<std::string>("auth_token", "")),
         linear_speed_(pnh_.param<double>("manual_linear_speed", 0.25)),
         angular_speed_(pnh_.param<double>("manual_angular_speed", 0.8)),
+        manual_deadband_(pnh_.param<double>("manual_deadband", 0.08)),
         beacon_enabled_(rosBoolParam(pnh_, "udp_beacon_enabled", true)),
         beacon_port_(pnh_.param<int>("udp_beacon_port", 47820)),
         rec_min_distance_m_(pnh_.param<double>("rec_min_distance_m", 0.10)),
@@ -365,6 +366,7 @@ class MowerIosBridgeNode {
   std::string auth_token_;
   std::atomic<double> linear_speed_;
   std::atomic<double> angular_speed_;
+  std::atomic<double> manual_deadband_;
   std::atomic<bool> beacon_enabled_;
   int beacon_port_;
   double rec_min_distance_m_;
@@ -2030,10 +2032,14 @@ class MowerIosBridgeNode {
                           manual->contains("joystickX") || manual->contains("joystickY");
 
     if (has_axes) {
-      const double x = readAxis({"x", "lx", "horizontal", "joystickX"}, 0.0);
-      const double y = readAxis({"y", "ly", "vertical", "joystickY"}, 0.0);
+      double x = readAxis({"x", "lx", "horizontal", "joystickX"}, 0.0);
+      double y = readAxis({"y", "ly", "vertical", "joystickY"}, 0.0);
+      const double deadband = std::max(0.0, std::min(0.30, manual_deadband_.load()));
+      if (std::abs(x) < deadband) x = 0.0;
+      if (std::abs(y) < deadband) y = 0.0;
       twist.linear.x = y * linear_speed_.load();
-      twist.angular.z = x * angular_speed_.load();
+      // Invert X sign so right on joystick means right turn on robot.
+      twist.angular.z = -x * angular_speed_.load();
       joy_vel_pub_.publish(twist);
       manual_cmd_vel_pub_.publish(twist);
       ROS_INFO_THROTTLE(0.5, "[ios_bridge] manual axes x=%.3f y=%.3f -> vx=%.3f wz=%.3f",
@@ -2056,21 +2062,21 @@ class MowerIosBridgeNode {
     } else if (direction == "reverse") {
       twist.linear.x = -linear_speed_.load();
     } else if (direction == "left") {
-      twist.angular.z = angular_speed_.load();
-    } else if (direction == "right") {
       twist.angular.z = -angular_speed_.load();
+    } else if (direction == "right") {
+      twist.angular.z = angular_speed_.load();
     } else if (direction == "forward_left") {
       twist.linear.x = linear_speed_.load();
-      twist.angular.z = angular_speed_.load();
+      twist.angular.z = -angular_speed_.load();
     } else if (direction == "forward_right") {
       twist.linear.x = linear_speed_.load();
-      twist.angular.z = -angular_speed_.load();
+      twist.angular.z = angular_speed_.load();
     } else if (direction == "reverse_left") {
       twist.linear.x = -linear_speed_.load();
-      twist.angular.z = angular_speed_.load();
+      twist.angular.z = -angular_speed_.load();
     } else if (direction == "reverse_right") {
       twist.linear.x = -linear_speed_.load();
-      twist.angular.z = -angular_speed_.load();
+      twist.angular.z = angular_speed_.load();
     } else if (direction == "stop" || direction == "center" || direction == "idle") {
       joy_vel_pub_.publish(twist);
       manual_cmd_vel_pub_.publish(twist);
