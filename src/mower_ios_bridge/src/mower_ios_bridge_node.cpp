@@ -2194,13 +2194,27 @@ class MowerIosBridgeNode {
   void handleHttpSession(tcp::socket socket) {
     beast::flat_buffer buffer;
     boost::system::error_code ec;
-    http::request<http::string_body> req;
-    http::read(socket, buffer, req, ec);
-    if (ec) return;
+    socket.set_option(tcp::no_delay(true), ec);
 
-    auto res = handleHttpRequest(req);
-    res.keep_alive(false);
-    http::write(socket, res, ec);
+    for (;;) {
+      http::request<http::string_body> req;
+      http::read(socket, buffer, req, ec);
+      if (ec == http::error::end_of_stream) break;
+      if (ec) break;
+
+      auto res = handleHttpRequest(req);
+      const bool keep_alive = req.keep_alive();
+      res.keep_alive(keep_alive);
+      if (keep_alive) {
+        res.set(http::field::connection, "keep-alive");
+      } else {
+        res.set(http::field::connection, "close");
+      }
+
+      http::write(socket, res, ec);
+      if (ec || !keep_alive) break;
+    }
+
     socket.shutdown(tcp::socket::shutdown_send, ec);
   }
 
