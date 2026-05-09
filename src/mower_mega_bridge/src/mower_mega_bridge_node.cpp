@@ -1043,10 +1043,16 @@ private:
 
     void sendMOVCommand(const geometry_msgs::Twist::ConstPtr& twist, int mode)
     {
-        if (emergency_) return;
+        if (emergency_) {
+            ROS_WARN_THROTTLE(1.0, "[mega_bridge] dropping MOV mode=%d due to active emergency", mode);
+            return;
+        }
         // Keep obstacle avoidance lock for autonomous Nav2 only.
         // Manual teleop (mode=1) must still be able to command wheels.
-        if (local_avoid_ && mode == 0) return;
+        if (local_avoid_ && mode == 0) {
+            ROS_WARN_THROTTLE(1.0, "[mega_bridge] dropping NAV MOV due to local_avoidance");
+            return;
+        }
 
         // Convert ROS Twist to movement parameters
         double vx = twist->linear.x;           // m/s
@@ -1073,6 +1079,7 @@ private:
                      vx_stream.str(),
                      wz_stream.str(),
                      mode_stream.str()});
+        ROS_INFO_THROTTLE(0.5, "[mega_bridge] TX MOV mode=%d vx=%.3f wz=%.3f", mode, vx, wz);
     }
 
     void cbCmdVelNav2(const geometry_msgs::Twist::ConstPtr& twist)
