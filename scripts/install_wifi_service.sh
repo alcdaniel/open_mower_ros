@@ -10,7 +10,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ENV_FILE="${REPO_ROOT}/.env"
 WIFI_SCRIPT="${REPO_ROOT}/scripts/connect_wifi_from_env.sh"
 SERVICE_PATH="/etc/systemd/system/openmower-wifi.service"
