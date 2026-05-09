@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 ROS_DISTRO="${ROS_DISTRO:-noetic}"
 ENV_FILE="${MOWER_ENV_FILE:-${REPO_ROOT}/.env}"
@@ -315,16 +315,17 @@ install_wifi_service() {
   # Create service with absolute path expansion
   sudo bash -c "cat > '${service_path}' << 'WIFI_SERVICE_EOF'
 [Unit]
-Description=OpenMower Wi-Fi auto-connect from ${ENV_FILE}
+Description=OpenMower Wi-Fi auto-connect/keepalive from ${ENV_FILE}
 After=NetworkManager.service
 Wants=NetworkManager.service
 
 [Service]
-Type=oneshot
+Type=simple
 WorkingDirectory=${REPO_ROOT}
 Environment=MOWER_ENV_FILE=${ENV_FILE}
-ExecStart=${wifi_script}
-RemainAfterExit=yes
+ExecStart=/bin/bash -lc '${wifi_script}; while true; do sleep 60; ${wifi_script}; done'
+Restart=always
+RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
@@ -334,8 +335,8 @@ WIFI_SERVICE_EOF
 "
 
   sudo systemctl daemon-reload
-  if sudo systemctl enable openmower-wifi.service; then
-    echo "✓ WiFi service enabled for auto-start"
+  if sudo systemctl enable --now openmower-wifi.service; then
+    echo "✓ WiFi service enabled for auto-start and started now"
   else
     echo "✗ Failed to enable WiFi service" >&2
     return 1
@@ -524,7 +525,13 @@ rosdep update --include-eol-distros
 cd "${REPO_ROOT}"
 
 echo "Fetching git submodules..."
-git submodule update --init --recursive
+if git -C "${REPO_ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  if ! git -C "${REPO_ROOT}" submodule update --init --recursive; then
+    echo "⚠ git submodule update failed. Continuing setup without submodules."
+  fi
+else
+  echo "⚠ ${REPO_ROOT} is not a git repository. Skipping submodule fetch and continuing."
+fi
 
 echo "Installing workspace dependencies with rosdep..."
 ROSDEP_SKIP_KEYS="xesc_msgs xbot_msgs xbot_rpc xesc xesc_interface xesc_2040_driver xesc_yfr4_driver xesc_driver xbot_framework mower_msgs"

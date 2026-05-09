@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CONFIG_FILE="${REPO_ROOT}/mower_config.sh"
 EXAMPLE_FILE="${REPO_ROOT}/config/mower_config.sh.example"
 CUSTOM_PARAMS_FILE="${HOME}/custom_params.yaml"

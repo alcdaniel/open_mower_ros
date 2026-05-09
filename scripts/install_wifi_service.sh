@@ -55,16 +55,17 @@ log "Installing systemd service at ${SERVICE_PATH}..."
 
 run_as_root bash -c "cat > '${SERVICE_PATH}' << 'WIFI_SERVICE_EOF'
 [Unit]
-Description=OpenMower Wi-Fi auto-connect from ${ENV_FILE}
+Description=OpenMower Wi-Fi auto-connect/keepalive from ${ENV_FILE}
 After=NetworkManager.service
 Wants=NetworkManager.service
 
 [Service]
-Type=oneshot
+Type=simple
 WorkingDirectory=${REPO_ROOT}
 Environment=MOWER_ENV_FILE=${ENV_FILE}
-ExecStart=${WIFI_SCRIPT}
-RemainAfterExit=yes
+ExecStart=/bin/bash -lc '${WIFI_SCRIPT}; while true; do sleep 60; ${WIFI_SCRIPT}; done'
+Restart=always
+RestartSec=5
 StandardOutput=journal
 StandardError=journal
 
@@ -79,8 +80,8 @@ log "✓ Service file written"
 run_as_root systemctl daemon-reload
 log "✓ Systemd reloaded"
 
-if run_as_root systemctl enable openmower-wifi.service; then
-  log "✓ Service enabled for auto-start at boot"
+if run_as_root systemctl enable --now openmower-wifi.service; then
+  log "✓ Service enabled for auto-start at boot and started now"
 else
   error "Failed to enable service"
 fi
