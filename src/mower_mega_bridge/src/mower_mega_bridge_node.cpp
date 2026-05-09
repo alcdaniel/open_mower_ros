@@ -236,6 +236,8 @@ public:
         hb_hz_      = pnh.param<double>("heartbeat_hz", 3.0);
         offline_publish_hz_ = pnh.param<double>("offline_publish_hz", 1.0);
         rx_timeout_s_       = pnh.param<double>("rx_timeout_s", 15.0);
+        manual_nav_guard_s_ = pnh.param<double>("manual_nav_guard_s", 1.2);
+        last_manual_cmd_wall_s_.store(-1.0);
 
         // Latched so late subscribers (e.g. mower_logic during startup) always
         // receive an initial emergency state and do not block waiting forever.
@@ -320,6 +322,7 @@ private:
     double      hb_hz_;
     double      offline_publish_hz_;
     double      rx_timeout_s_;
+    double      manual_nav_guard_s_;
 
     // ── Atomic flags (no mutex needed) ────────────────────────────────────────
     std::atomic<uint32_t> seq_;
@@ -328,6 +331,7 @@ private:
     std::atomic<bool>     local_avoid_;
     std::atomic<bool>     ser_open_;
     std::atomic<bool>     mega_connected_;
+    std::atomic<double>   last_manual_cmd_wall_s_;
 
     // ── Sensor state (guarded by state_mutex_) ────────────────────────────────
     std::mutex  state_mutex_;
@@ -1084,12 +1088,24 @@ private:
 
     void cbCmdVelNav2(const geometry_msgs::Twist::ConstPtr& twist)
     {
+        const double now_s = ros::WallTime::now().toSec();
+        const double last_manual_s = last_manual_cmd_wall_s_.load();
+        if (last_manual_s > 0.0) {
+            const double dt_manual = now_s - last_manual_s;
+            if (dt_manual >= 0.0 && dt_manual < manual_nav_guard_s_) {
+                ROS_WARN_THROTTLE(1.0,
+                                  "[mega_bridge] dropping NAV MOV because manual command was %.0f ms ago",
+                                  dt_manual * 1000.0);
+                return;
+            }
+        }
         // Nav2 autonomous: mode=0 (pure pursuit, no Mega heading correction)
         sendMOVCommand(twist, 0);
     }
 
     void cbCmdVelManual(const geometry_msgs::Twist::ConstPtr& twist)
     {
+        last_manual_cmd_wall_s_.store(ros::WallTime::now().toSec());
         // Manual/teleop: mode=1 (with Mega heading correction)
         sendMOVCommand(twist, 1);
     }
