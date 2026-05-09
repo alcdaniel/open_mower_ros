@@ -27,6 +27,16 @@ The Docker images have a `-legacy` suffix or `releases-` prefix: (e.g. `releases
 
 ## Getting started
 
+### First boot hardening (do this first on fresh Ubuntu SD)
+
+Before running any setup script, complete the mandatory U-Boot/UART hardening
+flow described here:
+
+- [README_FIRST_BOOT_UBOOT_PICO.md](/Users/daniel/Documents/GitHub/lawn-mower/ros/open_mower_ros/README_FIRST_BOOT_UBOOT_PICO.md)
+
+This step prevents U-Boot boot interruption/hangs caused by incoming UART
+bytes and explains how to use a Raspberry Pi Pico as USB<->UART bridge.
+
 ### Running on your machine
 
 OpenMower requires ROS Noetic. ([installation instruction](http://wiki.ros.org/noetic/Installation)) There is no distributed release package yet, for development and test purpose it's best to build the workspace on your own.

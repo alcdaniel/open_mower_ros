@@ -92,6 +92,24 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+print_first_boot_notice() {
+  local first_boot_doc="${REPO_ROOT}/README_FIRST_BOOT_UBOOT_PICO.md"
+  cat <<EOF
+===============================================================================
+IMPORTANT: FIRST STEP ON FRESH UBUNTU SD
+-------------------------------------------------------------------------------
+Before this setup, ensure U-Boot/UART hardening is completed:
+  ${first_boot_doc}
+
+Critical U-Boot commands (serial terminal at 115200):
+  env default -a
+  setenv bootdelay -2
+  saveenv
+  reset
+===============================================================================
+EOF
+}
+
 require_command() {
   local command_name="$1"
   if ! command -v "${command_name}" >/dev/null 2>&1; then
@@ -398,6 +416,8 @@ Noetic packages available.
 EOF
   exit 1
 fi
+
+print_first_boot_notice
 
 sudo -v
 configure_uart_for_mega_bridge
