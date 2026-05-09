@@ -15,6 +15,7 @@ ALLOW_UNSUPPORTED_OS=0
 WITH_RVIZ=0
 INSTALL_WIFI_SERVICE=1
 CONFIGURE_UART=1
+INSTALL_AUTOSTART_SERVICE=1
 
 usage() {
   cat <<'EOF'
@@ -29,6 +30,7 @@ Prepares an Ubuntu Raspberry Pi for this OpenMower ROS workspace:
   - creates mower_config.sh from the example when missing
   - creates a local .env for Wi-Fi/NTRIP settings when missing
   - installs a systemd Wi-Fi auto-connect service
+  - installs a systemd OpenMower autostart launch service
   - configures Raspberry UART for the Mega bridge (or run
     ./scripts/configure_raspberry_uart.sh standalone)
   - hardens boot/login to never use UART console (or run
@@ -44,6 +46,7 @@ Options:
   --no-copy-config         Do not create mower_config.sh
   --no-wifi-service        Do not install the Wi-Fi systemd service
   --no-uart-config         Do not configure Raspberry UART for Mega bridge
+  --no-autostart-service   Do not install OpenMower roslaunch autostart service
   --allow-unsupported-os   Continue even if Ubuntu codename is not focal
   --with-rviz              Install rviz for local debugging on the Raspberry
   -h, --help               Show this help
@@ -72,6 +75,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-uart-config)
       CONFIGURE_UART=0
+      ;;
+    --no-autostart-service)
+      INSTALL_AUTOSTART_SERVICE=0
       ;;
     --allow-unsupported-os)
       ALLOW_UNSUPPORTED_OS=1
@@ -181,28 +187,28 @@ remove_conflicting_python_ros_packages() {
 }
 
 ensure_swap() {
-  local desired_total_mb="${1:-3072}"
+  local desired_swap_mb="${1:-4096}"
   local swapfile="/swapfile"
-  local mem_total_mb swap_total_mb need_mb
+  local current_swapfile_mb=0
 
-  mem_total_mb=$(awk '/MemTotal/ {printf "%d", $2/1024}' /proc/meminfo)
-  swap_total_mb=$(awk '/SwapTotal/ {printf "%d", $2/1024}' /proc/meminfo)
+  if [[ -f "${swapfile}" ]]; then
+    current_swapfile_mb=$(($(stat -c%s "${swapfile}") / 1024 / 1024))
+  fi
 
-  if (( mem_total_mb + swap_total_mb >= desired_total_mb )); then
-    echo "Memory + swap already >= ${desired_total_mb} MB (mem=${mem_total_mb} swap=${swap_total_mb}). Skipping swap setup."
+  if awk 'NR>1 {print $1, $3}' /proc/swaps | grep -q "^${swapfile} " && (( current_swapfile_mb >= desired_swap_mb )); then
+    echo "Swapfile already active and >= ${desired_swap_mb} MB (${current_swapfile_mb} MB). Skipping swap setup."
     return
   fi
 
-  need_mb=$(( desired_total_mb - mem_total_mb - swap_total_mb ))
-  echo "Adding ${need_mb} MB of swap at ${swapfile} so the catkin build does not OOM..."
+  echo "Ensuring ${desired_swap_mb} MB swapfile at ${swapfile} so the catkin build does not OOM..."
 
   if [[ -e "${swapfile}" ]]; then
     sudo swapoff "${swapfile}" 2>/dev/null || true
     sudo rm -f "${swapfile}"
   fi
 
-  if ! sudo fallocate -l "${need_mb}M" "${swapfile}"; then
-    sudo dd if=/dev/zero of="${swapfile}" bs=1M count="${need_mb}" status=progress
+  if ! sudo fallocate -l "${desired_swap_mb}M" "${swapfile}"; then
+    sudo dd if=/dev/zero of="${swapfile}" bs=1M count="${desired_swap_mb}" status=progress
   fi
   sudo chmod 600 "${swapfile}"
   sudo mkswap "${swapfile}"
@@ -348,6 +354,22 @@ WIFI_SERVICE_EOF
   else
     echo "⚠ Warning: Service may not be properly installed" >&2
   fi
+}
+
+install_openmower_autostart_service() {
+  if [[ "${INSTALL_AUTOSTART_SERVICE}" -ne 1 ]]; then
+    return
+  fi
+
+  local autostart_script="${SCRIPT_DIR}/install_openmower_autostart_service.sh"
+  if [[ ! -f "${autostart_script}" ]]; then
+    echo "Missing OpenMower autostart installer script: ${autostart_script}" >&2
+    return 1
+  fi
+  if [[ ! -x "${autostart_script}" ]]; then
+    chmod +x "${autostart_script}"
+  fi
+  "${autostart_script}"
 }
 
 setup_shell_env() {
@@ -719,12 +741,13 @@ fi
 
 write_default_env
 install_wifi_service
+install_openmower_autostart_service
 setup_shell_env
 warn_if_env_needs_editing
 
 if [[ "${SKIP_BUILD}" -ne 1 ]]; then
   if [[ "${SKIP_SWAP}" -ne 1 ]]; then
-    ensure_swap 3072
+    ensure_swap 4096
   fi
 
   build_jobs="$(pick_build_jobs)"
@@ -756,4 +779,8 @@ If you ever need to reload the environment manually in the current shell:
 Wi-Fi auto-connect:
   Edit ${ENV_FILE} with MOWER_WIFI_SSID and MOWER_WIFI_PASSWORD.
   The openmower-wifi.service will try to connect on boot.
+
+OpenMower autostart:
+  The openmower-autostart.service is enabled and will launch:
+    roslaunch open_mower open_mower.launch
 EOF
