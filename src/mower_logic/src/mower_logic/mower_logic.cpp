@@ -206,8 +206,14 @@ bool setGPS(bool enabled) {
   }
 
   if (!success) {
-    ROS_ERROR_STREAM("Error setting GPS. Going to emergency. THIS SHOULD NEVER HAPPEN");
-    setEmergencyMode(true);
+    const auto last_config = getConfig();
+    const bool manual_mode = (last_config.automatic_mode == eAutoMode::MANUAL);
+    if (enabled && manual_mode) {
+      ROS_ERROR_STREAM("Error setting GPS, but staying out of emergency because automatic_mode=MANUAL");
+    } else {
+      ROS_ERROR_STREAM("Error setting GPS. Going to emergency. THIS SHOULD NEVER HAPPEN");
+      setEmergencyMode(true);
+    }
   }
 
   return success;
