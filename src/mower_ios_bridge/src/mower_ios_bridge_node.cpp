@@ -2010,17 +2010,38 @@ class MowerIosBridgeNode {
 
   bool publishManualTwist(const json& body) {
     geometry_msgs::Twist twist;
-    if (body.contains("x") || body.contains("y")) {
-      const double x = clampValue(body.value("x", 0.0), -1.0, 1.0);
-      const double y = clampValue(body.value("y", 0.0), -1.0, 1.0);
+    const json* manual = &body;
+    if (body.contains("manual") && body["manual"].is_object()) {
+      manual = &body["manual"];
+    }
+
+    auto readAxis = [&](const std::vector<std::string>& keys, double fallback) -> double {
+      for (const auto& key : keys) {
+        if (manual->contains(key) && (*manual)[key].is_number()) {
+          return clampValue((*manual)[key].get<double>(), -1.0, 1.0);
+        }
+      }
+      return fallback;
+    };
+
+    const bool has_axes = manual->contains("x") || manual->contains("y") ||
+                          manual->contains("lx") || manual->contains("ly") ||
+                          manual->contains("horizontal") || manual->contains("vertical") ||
+                          manual->contains("joystickX") || manual->contains("joystickY");
+
+    if (has_axes) {
+      const double x = readAxis({"x", "lx", "horizontal", "joystickX"}, 0.0);
+      const double y = readAxis({"y", "ly", "vertical", "joystickY"}, 0.0);
       twist.linear.x = y * linear_speed_.load();
       twist.angular.z = x * angular_speed_.load();
       joy_vel_pub_.publish(twist);
       manual_cmd_vel_pub_.publish(twist);
+      ROS_INFO_THROTTLE(0.5, "[ios_bridge] manual axes x=%.3f y=%.3f -> vx=%.3f wz=%.3f",
+                        x, y, twist.linear.x, twist.angular.z);
       return std::abs(x) > 1e-3 || std::abs(y) > 1e-3;
     }
 
-    std::string direction = body.value("direction", "stop");
+    std::string direction = manual->value("direction", manual->value("cmd", "stop"));
     for (char& c : direction) c = static_cast<char>(std::tolower(c));
 
     if (direction == "up") direction = "forward";
@@ -2050,7 +2071,7 @@ class MowerIosBridgeNode {
     } else if (direction == "reverse_right") {
       twist.linear.x = -linear_speed_.load();
       twist.angular.z = -angular_speed_.load();
-    } else if (direction == "stop") {
+    } else if (direction == "stop" || direction == "center" || direction == "idle") {
       joy_vel_pub_.publish(twist);
       manual_cmd_vel_pub_.publish(twist);
       return false;
