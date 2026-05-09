@@ -58,6 +58,44 @@ disable_and_mask_service() {
   run_root systemctl mask "${unit}" >/dev/null 2>&1 || true
 }
 
+ensure_kv_in_file() {
+  local file_path="$1"
+  local key="$2"
+  local value="$3"
+  local line="${key}=${value}"
+
+  if [[ ! -f "${file_path}" ]]; then
+    return
+  fi
+
+  if grep -Eq "^[[:space:]]*${key}=" "${file_path}"; then
+    if ! grep -Eq "^[[:space:]]*${key}=${value}[[:space:]]*$" "${file_path}"; then
+      run_root sed -i -E "s|^[[:space:]]*${key}=.*|${line}|" "${file_path}"
+      NEEDS_REBOOT=1
+      echo "Updated ${key} in ${file_path} -> ${value}"
+    fi
+  else
+    echo "${line}" | run_root tee -a "${file_path}" >/dev/null
+    NEEDS_REBOOT=1
+    echo "Added ${line} to ${file_path}"
+  fi
+}
+
+ensure_overlay_in_file() {
+  local file_path="$1"
+  local overlay_line="dtoverlay=miniuart-bt"
+
+  if [[ ! -f "${file_path}" ]]; then
+    return
+  fi
+
+  if ! grep -Eq "^[[:space:]]*dtoverlay=miniuart-bt[[:space:]]*$" "${file_path}"; then
+    echo "${overlay_line}" | run_root tee -a "${file_path}" >/dev/null
+    NEEDS_REBOOT=1
+    echo "Added ${overlay_line} to ${file_path}"
+  fi
+}
+
 force_bootloader_no_uart() {
   if ! command -v rpi-eeprom-config >/dev/null 2>&1; then
     return
@@ -83,6 +121,14 @@ force_bootloader_no_uart() {
 echo "Configuring Raspberry to NEVER expose boot/login console on UART..."
 
 backup_boot_files
+
+# Ensure GPIO UART is enabled and mapped to stable PL011 on GPIO14/15.
+# Ubuntu on Raspberry does not always create /dev/serial0 aliases, so we rely on
+# /dev/ttyAMA0 explicitly. miniuart-bt moves Bluetooth to miniUART and keeps
+# PL011 for the GPIO header.
+ensure_kv_in_file "${BOOT_CFG}" "enable_uart" "1"
+ensure_kv_in_file "${USER_CFG}" "enable_uart" "1"
+ensure_overlay_in_file "${USER_CFG}"
 
 if [[ -f "${CMDLINE_CFG}" ]]; then
   remove_serial_console_tokens "${CMDLINE_CFG}"
