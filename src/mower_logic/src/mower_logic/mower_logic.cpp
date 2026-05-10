@@ -402,6 +402,7 @@ void checkSafety(const ros::TimerEvent& timer_event) {
   const auto status_time = status_state_subscriber.getMessageTime();
   const auto power_time = power_state_subscriber.getMessageTime();
   const auto last_good_gps = getLastGoodGPS();
+  const bool manual_mode = (last_config.automatic_mode == eAutoMode::MANUAL);
 
   high_level_status.emergency = last_emergency.latched_emergency;
   high_level_status.is_charging = last_power.charge_voltage_chg > 10.0 || last_power.charge_voltage_adc > 10.0;
@@ -441,14 +442,28 @@ void checkSafety(const ros::TimerEvent& timer_event) {
   if (ros::Time::now() - pose_time > ros::Duration(1.0)) {
     stopBlade();
     stopMoving();
-    ROS_WARN_STREAM_THROTTLE(
-        5, "om_mower_logic: EMERGENCY pose values stopped. dt was: " << (ros::Time::now() - pose_time));
+    if (manual_mode) {
+      ROS_WARN_STREAM_THROTTLE(
+          2, "om_mower_logic: MANUAL pose values stopped. stopping movement only. dt was: "
+                 << (ros::Time::now() - pose_time));
+    } else {
+      ROS_WARN_STREAM_THROTTLE(
+          5, "om_mower_logic: EMERGENCY pose values stopped. dt was: " << (ros::Time::now() - pose_time));
+    }
     return;
   }
 
   // check if status is current. if not, we have a problem since it contains wheel ticks and so on.
   // Since these should never drop out, we enter emergency instead of "only" stopping
   if (ros::Time::now() - status_time > ros::Duration(3) || ros::Time::now() - power_time > ros::Duration(3)) {
+    if (manual_mode) {
+      stopBlade();
+      stopMoving();
+      ROS_WARN_STREAM_THROTTLE(
+          2, "om_mower_logic: MANUAL /mower/status values stopped. stopping movement only. dt status="
+                 << (ros::Time::now() - status_time) << " dt power=" << (ros::Time::now() - power_time));
+      return;
+    }
     setEmergencyMode(true);
     ROS_WARN_STREAM_THROTTLE(
         5, "om_mower_logic: EMERGENCY /mower/status values stopped. dt was: " << (ros::Time::now() - status_time));

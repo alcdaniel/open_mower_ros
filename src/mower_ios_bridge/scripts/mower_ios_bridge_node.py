@@ -20,7 +20,7 @@ from mower_map.srv import (
     SetDockingPointSrvRequest,
 )
 from mower_msgs.msg import Emergency, ESCStatus, HighLevelStatus, Power, Status
-from mower_msgs.srv import HighLevelControlSrv, HighLevelControlSrvRequest, MowerControlSrv
+from mower_msgs.srv import EmergencyStopSrv, HighLevelControlSrv, HighLevelControlSrvRequest, MowerControlSrv
 from sensor_msgs.msg import Imu, Range
 from std_msgs.msg import Bool, String
 from xbot_msgs.msg import AbsolutePose
@@ -144,6 +144,7 @@ class IOSBridge:
 
         self.high_level_srv = rospy.ServiceProxy("/mower_service/high_level_control", HighLevelControlSrv)
         self.mower_control_srv = rospy.ServiceProxy("/ll/_service/mow_enabled", MowerControlSrv)
+        self.emergency_srv = rospy.ServiceProxy("/ll/_service/emergency", EmergencyStopSrv)
         self.add_area_srv = rospy.ServiceProxy("/mower_map_service/add_mowing_area", AddMowingAreaSrv)
         self.set_dock_srv = rospy.ServiceProxy("/mower_map_service/set_docking_point", SetDockingPointSrv)
         self.clear_map_srv = rospy.ServiceProxy("/mower_map_service/clear_map", ClearMapSrv)
@@ -261,6 +262,12 @@ class IOSBridge:
                 body = self._read_json(request)
                 try:
                     self.handle_manual(body)
+                    self._send_json(request, {"ok": True})
+                except (RuntimeError, ValueError) as exc:
+                    self._send_json(request, {"ok": False, "error": str(exc)})
+            elif method == "POST" and path == "/api/emergency/clear":
+                try:
+                    self.clear_emergency()
                     self._send_json(request, {"ok": True})
                 except (RuntimeError, ValueError) as exc:
                     self._send_json(request, {"ok": False, "error": str(exc)})
@@ -431,6 +438,9 @@ class IOSBridge:
             "state": state,
             "robotStatus": int(low.mower_status) if low else 0,
             "errorCode": 3 if emergency_active else (4 if tilt_active else 0),
+            "emergencyActive": bool(emergency_active),
+            "emergencyLatched": bool(emergency.latched_emergency) if emergency else False,
+            "emergencyReason": str(emergency.reason) if emergency else "",
             "batteryVoltage": battery_voltage,
             "chargeCurrent": charge_current,
             "wheelCurrent": wheel_current,
@@ -1445,8 +1455,20 @@ class IOSBridge:
         elif command == "bladeOff":
             self._check_hardware(snap)
             self._call_mower_control(False)
+        elif command == "clearEmergency":
+            self.clear_emergency()
         else:
             raise ValueError("Comando '{}' no reconocido.".format(command))
+
+    def clear_emergency(self):
+        with self.service_lock:
+            try:
+                rospy.wait_for_service("/ll/_service/emergency", timeout=2.0)
+                self.emergency_srv(0)
+            except rospy.ROSException:
+                raise RuntimeError("Servicio /ll/_service/emergency no disponible.")
+            except rospy.ServiceException as exc:
+                raise RuntimeError("No se pudo limpiar la emergencia: {}".format(exc))
 
     def handle_manual(self, manual):
         self._check_hardware(self.state.snapshot())
