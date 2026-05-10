@@ -2236,6 +2236,18 @@ class MowerIosBridgeNode {
         handleManualWebSocket(std::move(socket), std::move(req));
         return;
       }
+      if (websocket::is_upgrade(req) && path == "/ws/api") {
+        if (!auth_token_.empty() && !authorized(req)) {
+          auto unauthorized_res = jsonResponse(http::status::unauthorized, json{{"error", "unauthorized"}});
+          unauthorized_res.keep_alive(false);
+          unauthorized_res.set(http::field::connection, "close");
+          http::write(socket, unauthorized_res, ec);
+          break;
+        }
+        touchAppSession();
+        handleApiWebSocket(std::move(socket), std::move(req));
+        return;
+      }
 
       auto res = handleHttpRequest(req);
       const bool keep_alive = req.keep_alive();
@@ -2287,6 +2299,74 @@ class MowerIosBridgeNode {
     }
 
     ROS_INFO("[ios_bridge] manual websocket disconnected");
+    ws.close(websocket::close_code::normal, ec);
+  }
+
+  void handleApiWebSocket(tcp::socket socket, http::request<http::string_body> req) {
+    websocket::stream<tcp::socket> ws(std::move(socket));
+    boost::system::error_code ec;
+    ws.accept(req, ec);
+    if (ec) {
+      ROS_WARN("[ios_bridge] api websocket accept error: %s", ec.message().c_str());
+      return;
+    }
+
+    ROS_INFO("[ios_bridge] api websocket connected");
+    beast::flat_buffer ws_buffer;
+    for (;;) {
+      ws.read(ws_buffer, ec);
+      if (ec == websocket::error::closed) break;
+      if (ec) {
+        ROS_WARN("[ios_bridge] api websocket read error: %s", ec.message().c_str());
+        break;
+      }
+      if (!ws.got_text()) {
+        ws_buffer.consume(ws_buffer.size());
+        continue;
+      }
+
+      std::string payload = beast::buffers_to_string(ws_buffer.cdata());
+      ws_buffer.consume(ws_buffer.size());
+      json out;
+      try {
+        const json in = readJsonBody(payload);
+        const std::string op = in.value("op", "");
+        if (op == "status") {
+          out = statusPayload();
+          out["ok"] = true;
+        } else if (op == "telemetry") {
+          out = telemetryPayload();
+          out["ok"] = true;
+        } else if (op == "health") {
+          out = healthPayload();
+          out["ok"] = true;
+        } else if (op == "command") {
+          const std::string command = in.value("command", "");
+          handleCommand(command);
+          out = json{{"ok", true}};
+        } else if (op == "manual") {
+          const bool active = publishManualTwist(in);
+          setManualActive(active);
+          out = json{{"ok", true}, {"manualActive", active}};
+        } else if (op == "ping") {
+          out = json{{"ok", true}, {"pong", true}};
+        } else {
+          out = json{{"ok", false}, {"error", "op no reconocido"}};
+        }
+      } catch (const std::exception& exc) {
+        out = json{{"ok", false}, {"error", exc.what()}};
+      }
+
+      std::string out_text = out.dump();
+      ws.text(true);
+      ws.write(asio::buffer(out_text), ec);
+      if (ec) {
+        ROS_WARN("[ios_bridge] api websocket write error: %s", ec.message().c_str());
+        break;
+      }
+    }
+
+    ROS_INFO("[ios_bridge] api websocket disconnected");
     ws.close(websocket::close_code::normal, ec);
   }
 
