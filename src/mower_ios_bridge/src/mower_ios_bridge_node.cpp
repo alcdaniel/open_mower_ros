@@ -45,6 +45,7 @@
 #include <mower_map/ClearMapSrv.h>
 #include <mower_map/SetDockingPointSrv.h>
 #include <mower_msgs/Emergency.h>
+#include <mower_msgs/EmergencyStopSrv.h>
 #include <mower_msgs/ESCStatus.h>
 #include <mower_msgs/HighLevelStatus.h>
 #include <mower_msgs/MowerControlSrv.h>
@@ -263,6 +264,7 @@ class MowerIosBridgeNode {
 
     high_level_srv_ = nh_.serviceClient<mower_msgs::HighLevelControlSrv>("/mower_service/high_level_control");
     mower_control_srv_ = nh_.serviceClient<mower_msgs::MowerControlSrv>("/ll/_service/mow_enabled");
+    emergency_stop_srv_ = nh_.serviceClient<mower_msgs::EmergencyStopSrv>("/ll/_service/emergency");
     add_area_srv_ = nh_.serviceClient<mower_map::AddMowingAreaSrv>("/mower_map_service/add_mowing_area");
     set_dock_srv_ = nh_.serviceClient<mower_map::SetDockingPointSrv>("/mower_map_service/set_docking_point");
     clear_map_srv_ = nh_.serviceClient<mower_map::ClearMapSrv>("/mower_map_service/clear_map");
@@ -395,6 +397,7 @@ class MowerIosBridgeNode {
 
   ros::ServiceClient high_level_srv_;
   ros::ServiceClient mower_control_srv_;
+  ros::ServiceClient emergency_stop_srv_;
   ros::ServiceClient add_area_srv_;
   ros::ServiceClient set_dock_srv_;
   ros::ServiceClient clear_map_srv_;
@@ -1907,6 +1910,10 @@ class MowerIosBridgeNode {
     } else if (command == "bladeOff") {
       checkHardware(snap, false);
       callMowerControl(false);
+    } else if (command == "clearEmergency") {
+      clearEmergencyStop();
+      setManualActive(false);
+      publishManualTwist(json{{"direction", "stop"}});
     } else {
       throw std::runtime_error("Comando '" + command + "' no reconocido.");
     }
@@ -2007,6 +2014,18 @@ class MowerIosBridgeNode {
       msg.data = enabled;
       blade_cmd_pub_.publish(msg);
       ROS_WARN("[ios_bridge] %s service failed, sent fallback /mega/blade_cmd", svc.c_str());
+    }
+  }
+
+  void clearEmergencyStop() {
+    const std::string svc = "/ll/_service/emergency";
+    if (!ros::service::waitForService(svc, ros::Duration(1.0))) {
+      throw std::runtime_error("Servicio " + svc + " no disponible.");
+    }
+    mower_msgs::EmergencyStopSrv srv;
+    srv.request.emergency = 0;
+    if (!emergency_stop_srv_.call(srv)) {
+      throw std::runtime_error("No se pudo desactivar emergencia en " + svc);
     }
   }
 
@@ -2269,6 +2288,14 @@ class MowerIosBridgeNode {
         const json body = readJsonBody(req.body());
         try {
           handleManual(body);
+          return jsonResponse(http::status::ok, json{{"ok", true}});
+        } catch (const std::exception& exc) {
+          return jsonResponse(http::status::ok, json{{"ok", false}, {"error", exc.what()}});
+        }
+      }
+      if (req.method() == http::verb::post && path == "/api/emergency/clear") {
+        try {
+          handleCommand("clearEmergency");
           return jsonResponse(http::status::ok, json{{"ok", true}});
         } catch (const std::exception& exc) {
           return jsonResponse(http::status::ok, json{{"ok", false}, {"error", exc.what()}});
