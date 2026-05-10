@@ -32,6 +32,7 @@
 #include <boost/asio.hpp>
 #include <boost/beast/core.hpp>
 #include <boost/beast/http.hpp>
+#include <boost/beast/websocket.hpp>
 #include <boost/system/error_code.hpp>
 #include <nlohmann/json.hpp>
 
@@ -66,6 +67,7 @@
 
 namespace beast = boost::beast;
 namespace http = beast::http;
+namespace websocket = beast::websocket;
 namespace asio = boost::asio;
 using tcp = asio::ip::tcp;
 using json = nlohmann::json;
@@ -2221,6 +2223,20 @@ class MowerIosBridgeNode {
       if (ec == http::error::end_of_stream) break;
       if (ec) break;
 
+      const std::string path = requestPath(req);
+      if (websocket::is_upgrade(req) && path == "/ws/manual") {
+        if (!auth_token_.empty() && !authorized(req)) {
+          auto unauthorized_res = jsonResponse(http::status::unauthorized, json{{"error", "unauthorized"}});
+          unauthorized_res.keep_alive(false);
+          unauthorized_res.set(http::field::connection, "close");
+          http::write(socket, unauthorized_res, ec);
+          break;
+        }
+        touchAppSession();
+        handleManualWebSocket(std::move(socket), std::move(req));
+        return;
+      }
+
       auto res = handleHttpRequest(req);
       const bool keep_alive = req.keep_alive();
       res.keep_alive(keep_alive);
@@ -2235,6 +2251,43 @@ class MowerIosBridgeNode {
     }
 
     socket.shutdown(tcp::socket::shutdown_send, ec);
+  }
+
+  void handleManualWebSocket(tcp::socket socket, http::request<http::string_body> req) {
+    websocket::stream<tcp::socket> ws(std::move(socket));
+    boost::system::error_code ec;
+    ws.accept(req, ec);
+    if (ec) {
+      ROS_WARN("[ios_bridge] manual websocket accept error: %s", ec.message().c_str());
+      return;
+    }
+
+    ROS_INFO("[ios_bridge] manual websocket connected");
+    beast::flat_buffer ws_buffer;
+    for (;;) {
+      ws.read(ws_buffer, ec);
+      if (ec == websocket::error::closed) break;
+      if (ec) {
+        ROS_WARN("[ios_bridge] manual websocket read error: %s", ec.message().c_str());
+        break;
+      }
+      if (!ws.got_text()) {
+        ws_buffer.consume(ws_buffer.size());
+        continue;
+      }
+
+      std::string payload = beast::buffers_to_string(ws_buffer.cdata());
+      ws_buffer.consume(ws_buffer.size());
+      try {
+        const json body = readJsonBody(payload);
+        handleManual(body);
+      } catch (const std::exception& exc) {
+        ROS_WARN_THROTTLE(1.0, "[ios_bridge] manual websocket payload rejected: %s", exc.what());
+      }
+    }
+
+    ROS_INFO("[ios_bridge] manual websocket disconnected");
+    ws.close(websocket::close_code::normal, ec);
   }
 
   http::response<http::string_body> handleHttpRequest(const http::request<http::string_body>& req) {
