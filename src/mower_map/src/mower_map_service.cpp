@@ -40,6 +40,7 @@
 // JSON for map storage
 #include <filesystem>
 #include <fstream>
+#include <cstring>
 #include <nlohmann/json.hpp>
 #include <random>
 #include <string>
@@ -54,12 +55,49 @@ using json = nlohmann::ordered_json;
 // RPC
 #include "xbot_rpc/provider.h"
 
-const std::string MAP_FILE = "map.json";
-const std::string LEGACY_MAP_FILE = "map.bag";
+std::string MAP_FILE = "map.json";
+std::string LEGACY_MAP_FILE = "map.bag";
 
 // Forward declarations
 void saveMapToFile();
 void buildMap();
+
+std::string resolveHomeDir() {
+  const char* home_env = std::getenv("HOME");
+  if (home_env != nullptr && std::strlen(home_env) > 0) {
+    return std::string(home_env);
+  }
+  return "/home/ubuntu";
+}
+
+void configureMapPaths() {
+  const std::filesystem::path base_dir = std::filesystem::path(resolveHomeDir()) / ".openmower";
+  std::error_code ec;
+  std::filesystem::create_directories(base_dir, ec);
+  if (ec) {
+    ROS_WARN_STREAM("Could not create map directory '" << base_dir.string() << "': " << ec.message()
+                                                       << ". Falling back to current working directory.");
+    MAP_FILE = "map.json";
+    LEGACY_MAP_FILE = "map.bag";
+    return;
+  }
+
+  MAP_FILE = (base_dir / "map.json").string();
+  LEGACY_MAP_FILE = (base_dir / "map.bag").string();
+
+  // One-time migration from the historical ~/.ros/map.json location.
+  const std::filesystem::path old_map_file = std::filesystem::path(resolveHomeDir()) / ".ros" / "map.json";
+  if (!std::filesystem::exists(MAP_FILE) && std::filesystem::exists(old_map_file)) {
+    std::error_code copy_ec;
+    std::filesystem::copy_file(old_map_file, MAP_FILE, std::filesystem::copy_options::overwrite_existing, copy_ec);
+    if (copy_ec) {
+      ROS_WARN_STREAM("Could not migrate map file from '" << old_map_file.string() << "' to '" << MAP_FILE
+                                                           << "': " << copy_ec.message());
+    } else {
+      ROS_INFO_STREAM("Migrated map file from '" << old_map_file.string() << "' to '" << MAP_FILE << "'");
+    }
+  }
+}
 
 // Struct definitions for JSON serialization
 struct Point {
@@ -737,6 +775,9 @@ int main(int argc, char** argv) {
   map_pub = n.advertise<nav_msgs::OccupancyGrid>("mower_map_service/map", 10, true);
   map_server_viz_array_pub = n.advertise<visualization_msgs::MarkerArray>("mower_map_service/map_viz", 10, true);
   map_size_pub = n.advertise<xbot_msgs::MapSize>("mower_map_service/map_size", 10, true);
+
+  configureMapPaths();
+  ROS_INFO_STREAM("Map file path: " << MAP_FILE);
 
   rpc_provider.init();
 
