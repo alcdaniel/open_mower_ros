@@ -756,16 +756,26 @@ private:
         } else if (type == "EVT") {
             std::string kind = fields.empty() ? "" : fields[0];
             if (kind == "OBSTACLE") {
-                local_avoid_ = true;
-                mower_msgs::Emergency em;
-                em.active_emergency  = false;
-                em.latched_emergency = false;
-                std::string reason = "OBSTACLE";
-                for (std::size_t i = 1; i < fields.size(); ++i)
-                    reason += ':' + fields[i];
-                em.reason = reason;
-                pub_emergency_.publish(em);
-                ROS_INFO_THROTTLE(1, "[mega_bridge] obstacle: %s", reason.c_str());
+                // Filter out false positives: SONAR:999 means no obstacle (max range)
+                bool is_real_obstacle = true;
+                if (fields.size() >= 2 && fields[1] == "SONAR" && fields.size() >= 3) {
+                    if (fields[2] == "999") {
+                        is_real_obstacle = false;
+                    }
+                }
+
+                if (is_real_obstacle) {
+                    local_avoid_ = true;
+                    mower_msgs::Emergency em;
+                    em.active_emergency  = false;
+                    em.latched_emergency = false;
+                    std::string reason = "OBSTACLE";
+                    for (std::size_t i = 1; i < fields.size(); ++i)
+                        reason += ':' + fields[i];
+                    em.reason = reason;
+                    pub_emergency_.publish(em);
+                    ROS_INFO_THROTTLE(1, "[mega_bridge] obstacle: %s", reason.c_str());
+                }
             } else if (kind == "SAFETY") {
                 std::string reason = "SAFETY";
                 for (std::size_t i = 1; i < fields.size(); ++i)
