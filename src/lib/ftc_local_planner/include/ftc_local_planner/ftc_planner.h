@@ -65,6 +65,7 @@ namespace ftc_local_planner
         double current_heading_rad = 0.0;  // Current yaw from mega/imu, updated in real-time
         void imuCallback(const sensor_msgs::Imu::ConstPtr& msg);
 
+        geometry_msgs::PoseStamped current_pose;  // Current robot pose (map frame)
         Eigen::Affine3d current_control_point;
 
         /**

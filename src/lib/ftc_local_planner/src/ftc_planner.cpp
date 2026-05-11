@@ -159,6 +159,7 @@ namespace ftc_local_planner
                                                  const geometry_msgs::TwistStamped &velocity,
                                                  geometry_msgs::TwistStamped &cmd_vel, std::string &message)
     {
+        current_pose = pose;  // Store current pose for use in update_control_point
 
         ros::Time now = ros::Time::now();
         double dt = now.toSec() - last_time.toSec();
@@ -427,7 +428,7 @@ namespace ftc_local_planner
         }
 
         // Convert current pose to Eigen, transform goal to robot frame (no TF latency)
-        Eigen::Vector3d robot_pos(pose.pose.position.x, pose.pose.position.y, 0);
+        Eigen::Vector3d robot_pos(current_pose.pose.position.x, current_pose.pose.position.y, 0);
         Eigen::Vector3d goal_pos = current_control_point.translation();
         Eigen::Vector3d diff = goal_pos - robot_pos;
 
