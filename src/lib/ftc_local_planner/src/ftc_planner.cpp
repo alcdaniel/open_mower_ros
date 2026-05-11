@@ -567,6 +567,12 @@ namespace ftc_local_planner
                 cmd_vel.twist.angular.z = ang_speed;
             }
         }
+        else if (current_state == PRE_ROTATE)
+        {
+            ROS_INFO_STREAM_THROTTLE(0.5, "[FTC] PRE_ROTATE: angle_err=" << angle_error
+                << " heading_rad=" << current_heading_rad << " lon_err=" << lon_error
+                << " lat_err=" << lat_error << " wz=" << cmd_vel.twist.angular.z);
+        }
 
         if (config.debug_pid)
         {
@@ -773,5 +779,8 @@ namespace ftc_local_planner
         // Compute yaw angle from quaternion
         current_heading_rad = std::atan2(2.0 * (w * z + x * y),
                                          1.0 - 2.0 * (y * y + z * z));
+
+        ROS_INFO_STREAM_THROTTLE(1.0, "[FTC] imuCallback: heading_rad=" << current_heading_rad
+            << " (deg=" << (current_heading_rad * 180.0 / M_PI) << ")");
     }
 }
