@@ -8,6 +8,7 @@
 
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
+#include <sensor_msgs/Imu.h>
 #include <costmap_2d/costmap_2d_ros.h>
 #include <tf/transform_listener.h>
 #include <dynamic_reconfigure/server.h>
@@ -57,8 +58,12 @@ namespace ftc_local_planner
         ros::Publisher global_plan_pub;
         ros::Publisher progress_pub;
         ros::Publisher obstacle_marker_pub;
+        ros::Subscriber imu_sub;
 
         FTCPlannerConfig config;
+
+        double current_heading_rad = 0.0;  // Current yaw from mega/imu, updated in real-time
+        void imuCallback(const sensor_msgs::Imu::ConstPtr& msg);
 
         Eigen::Affine3d current_control_point;
 

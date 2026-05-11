@@ -20,6 +20,7 @@ namespace ftc_local_planner
     void FTCPlanner::initialize(std::string name, tf2_ros::Buffer *tf, costmap_2d::Costmap2DROS *costmap_ros)
     {
         ros::NodeHandle private_nh("~/" + name);
+        ros::NodeHandle global_nh;
 
         progress_server = private_nh.advertiseService(
             "planner_get_progress", &FTCPlanner::getProgress, this);
@@ -27,6 +28,8 @@ namespace ftc_local_planner
         global_point_pub = private_nh.advertise<geometry_msgs::PoseStamped>("global_point", 1);
         global_plan_pub = private_nh.advertise<nav_msgs::Path>("global_plan", 1, true);
         obstacle_marker_pub = private_nh.advertise<visualization_msgs::Marker>("costmap_marker", 10);
+
+        imu_sub = global_nh.subscribe("mega/imu", 10, &FTCPlanner::imuCallback, this);
 
         costmap = costmap_ros;
         costmap_map_ = costmap->getCostmap();
@@ -427,7 +430,16 @@ namespace ftc_local_planner
 
         lat_error = local_control_point.translation().y();
         lon_error = local_control_point.translation().x();
-        angle_error = local_control_point.rotation().eulerAngles(0, 1, 2).z();
+
+        // Use IMU heading directly (faster, ~40ms vs TF latency ~100-200ms)
+        Eigen::Quaternion<double> goal_quat(current_control_point.linear());
+        double goal_yaw = std::atan2(2.0 * (goal_quat.w() * goal_quat.z() + goal_quat.x() * goal_quat.y()),
+                                      1.0 - 2.0 * (goal_quat.y() * goal_quat.y() + goal_quat.z() * goal_quat.z()));
+        angle_error = goal_yaw - current_heading_rad;
+
+        // Normalize angle to [-π, π]
+        while (angle_error > M_PI) angle_error -= 2.0 * M_PI;
+        while (angle_error < -M_PI) angle_error += 2.0 * M_PI;
     }
 
     void FTCPlanner::calculate_velocity_commands(double dt, geometry_msgs::TwistStamped &cmd_vel)
@@ -741,5 +753,18 @@ namespace ftc_local_planner
             obstacle_marker_pub.publish(obstacle_points);
             obstacle_points.points.clear();
         }
+    }
+
+    void FTCPlanner::imuCallback(const sensor_msgs::Imu::ConstPtr& msg)
+    {
+        // Extract yaw from quaternion: w, x, y, z
+        double w = msg->orientation.w;
+        double x = msg->orientation.x;
+        double y = msg->orientation.y;
+        double z = msg->orientation.z;
+
+        // Compute yaw angle from quaternion
+        current_heading_rad = std::atan2(2.0 * (w * z + x * y),
+                                         1.0 - 2.0 * (y * y + z * z));
     }
 }
