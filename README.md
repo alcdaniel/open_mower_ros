@@ -75,6 +75,11 @@ Wi-Fi state:
 journalctl -u openmower-wifi.service -b
 ```
 
+WiFi interface preference:
+- `wlan1` (USB dongle AIC8800/BrosTrend) is preferred when present.
+- If `wlan1` is unavailable, it falls back safely to `wlan0` (built-in Raspberry WiFi).
+- If dongle USB IDs are present but `wlan1` does not exist, the script reports a driver/modeswitch/power diagnostic.
+
 ### iOS app bridge
 
 This fork starts a small ROS HTTP bridge for the current `LawnMowerControl` iOS

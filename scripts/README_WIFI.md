@@ -1,11 +1,11 @@
 # WiFi Auto-Connect Guide
 
-Conecta Raspberry automáticamente en boot (sin relanzar setup).
+Conecta la Raspberry automáticamente en boot, priorizando dongle USB cuando exista.
 
 Scripts:
-- `connect_wifi_from_env.sh` — Conecta WiFi desde `.env`
-- `install_wifi_service.sh` — Instala servicio systemd (sin relanzar setup)
-- `setup_raspberry_ubuntu.sh` — Setup completo (instala todo)
+- `connect_wifi.sh` (alias) / `connect_wifi_from_env.sh` — conecta WiFi desde `.env`
+- `install_wifi_service.sh` — instala servicio systemd (sin relanzar setup)
+- `setup_raspberry_ubuntu.sh` — setup completo (instala todo)
 
 ---
 
@@ -51,13 +51,22 @@ Verifica que tenga:
 MOWER_WIFI_SSID="tu-red-wifi"
 MOWER_WIFI_PASSWORD="tu-contraseña"
 MOWER_WIFI_CONNECTION_NAME="openmower-wifi"
+WIFI_INTERFACE="wlan1"
+DISABLE_BUILTIN_WIFI_IF_DONGLE="true"
+REQUIRE_WIFI="false"
+```
+
+También se aceptan variables equivalentes:
+```env
+WIFI_SSID="tu-red-wifi"
+WIFI_PASSWORD="tu-contraseña"
 ```
 
 ### 2. Conectar ahora
 
 **Opción A: Script directo**
 ```bash
-bash ~/open_mower_ros/scripts/connect_wifi_from_env.sh
+bash ~/open_mower_ros/scripts/connect_wifi.sh
 ```
 
 **Opción B: Servicio systemd**
@@ -101,8 +110,16 @@ bash ~/open_mower_ros/scripts/install_wifi_service.sh
 |----------|----------|
 | `.env` not found | Crea en `~/open_mower_ros/.env` (no en `~/`) |
 | Service not found | `bash install_wifi_service.sh` |
-| No conecta | Check SSID/password, ver logs: `journalctl -u openmower-wifi.service -n 50` |
+| No conecta | Revisa SSID/password y logs: `journalctl -u openmower-wifi.service -n 50` |
 | Redes visibles | `nmcli dev wifi list` |
+| Dongle detectado pero sin `wlan1` | Revisar `aic8800-dkms`, `usb_modeswitch`, alimentación |
+
+### Política de interfaz
+
+- `wlan0`: WiFi interno de Raspberry Pi.
+- `wlan1`: dongle USB AIC8800/BrosTrend.
+- Si `wlan1` existe, el script la prioriza.
+- Si existe dongle USB pero **no** aparece `wlan1`, el script avisa (driver/modo/potencia) y no rompe `wlan0`.
 
 ---
 
@@ -126,6 +143,16 @@ tail -f /var/log/openmower-wifi.log
 
 # Ver IP
 hostname -I
+
+# Diagnóstico dongle AIC/BrosTrend
+lsusb
+lsusb -t
+ip -br link
+iw dev
+iw dev wlan1 link
+lsmod | grep -Ei "aic|8800"
+dmesg | grep -Ei "aic|8800|firmware|wlan|under-voltage|usb" | tail -n 120
+vcgencmd get_throttled
 ```
 
 ---

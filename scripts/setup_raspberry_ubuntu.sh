@@ -16,6 +16,8 @@ WITH_RVIZ=0
 INSTALL_WIFI_SERVICE=1
 CONFIGURE_UART=1
 INSTALL_AUTOSTART_SERVICE=1
+SETUP_AIC8800_DONGLE=1
+NON_BLOCKING_FAILURES=()
 
 usage() {
   cat <<'EOF'
@@ -47,6 +49,7 @@ Options:
   --no-wifi-service        Do not install the Wi-Fi systemd service
   --no-uart-config         Do not configure Raspberry UART for Mega bridge
   --no-autostart-service   Do not install OpenMower roslaunch autostart service
+  --no-aic8800-setup       Do not run AIC8800/BrosTrend USB WiFi setup helper
   --allow-unsupported-os   Continue even if Ubuntu codename is not focal
   --with-rviz              Install rviz for local debugging on the Raspberry
   -h, --help               Show this help
@@ -78,6 +81,9 @@ while [[ $# -gt 0 ]]; do
       ;;
     --no-autostart-service)
       INSTALL_AUTOSTART_SERVICE=0
+      ;;
+    --no-aic8800-setup)
+      SETUP_AIC8800_DONGLE=0
       ;;
     --allow-unsupported-os)
       ALLOW_UNSUPPORTED_OS=1
@@ -124,6 +130,18 @@ require_command() {
   fi
 }
 
+run_non_blocking_step() {
+  local step_name="$1"
+  shift
+  echo "Running optional step: ${step_name}"
+  if "$@"; then
+    echo "✓ Optional step succeeded: ${step_name}"
+  else
+    echo "⚠ Optional step failed (continuing): ${step_name}" >&2
+    NON_BLOCKING_FAILURES+=("${step_name}")
+  fi
+}
+
 configure_uart_for_mega_bridge() {
   if [[ "${CONFIGURE_UART}" -ne 1 ]]; then
     return
@@ -145,10 +163,8 @@ configure_uart_for_mega_bridge() {
   if [[ ! -x "${disable_uart_console_script}" ]]; then
     chmod +x "${disable_uart_console_script}"
   fi
-  echo "Running UART-only setup script: ${uart_script}"
-  "${uart_script}"
-  echo "Running UART boot/login hardening script: ${disable_uart_console_script}"
-  sudo "${disable_uart_console_script}"
+  run_non_blocking_step "UART setup script" "${uart_script}"
+  run_non_blocking_step "UART console hardening script" sudo "${disable_uart_console_script}"
 }
 
 configure_mower_config_early() {
@@ -160,8 +176,7 @@ configure_mower_config_early() {
   if [[ ! -x "${gps_script}" ]]; then
     chmod +x "${gps_script}"
   fi
-  echo "Running GPS/NTRIP defaults script: ${gps_script}"
-  "${gps_script}"
+  run_non_blocking_step "GPS/NTRIP defaults script" "${gps_script}"
 }
 
 remove_conflicting_python_ros_packages() {
@@ -261,6 +276,13 @@ write_default_env() {
 MOWER_WIFI_SSID="CHANGE_ME_WIFI_SSID"
 MOWER_WIFI_PASSWORD="CHANGE_ME_WIFI_PASSWORD"
 MOWER_WIFI_CONNECTION_NAME="openmower-wifi"
+# Preferred interface for Wi-Fi auto-connect:
+# - wlan1 for USB dongle (AIC8800/BrosTrend) when available
+# - script falls back safely to wlan0 when wlan1 does not exist
+WIFI_INTERFACE="wlan1"
+DISABLE_BUILTIN_WIFI_IF_DONGLE="true"
+# If true, setup_raspberry_ubuntu.sh fails when one-shot Wi-Fi connect fails.
+REQUIRE_WIFI="false"
 
 # Optional NTRIP placeholders for the future rover GPS integration.
 # The current setup script only uses the Wi-Fi values above.
@@ -370,6 +392,48 @@ install_openmower_autostart_service() {
     chmod +x "${autostart_script}"
   fi
   "${autostart_script}"
+}
+
+setup_aic8800_dongle() {
+  if [[ "${SETUP_AIC8800_DONGLE}" -ne 1 ]]; then
+    return
+  fi
+  local script="${SCRIPT_DIR}/setup_brostrend_aic8800.sh"
+  if [[ ! -f "${script}" ]]; then
+    echo "Missing AIC8800 setup script: ${script}" >&2
+    NON_BLOCKING_FAILURES+=("AIC8800 setup script missing")
+    return
+  fi
+  if [[ ! -x "${script}" ]]; then
+    chmod +x "${script}"
+  fi
+  run_non_blocking_step "AIC8800/BrosTrend USB WiFi setup" "${script}"
+}
+
+connect_wifi_now() {
+  local script="${SCRIPT_DIR}/connect_wifi.sh"
+  if [[ ! -f "${script}" ]]; then
+    echo "Missing Wi-Fi connect script: ${script}" >&2
+    NON_BLOCKING_FAILURES+=("Wi-Fi connect script missing")
+    return 0
+  fi
+  if [[ ! -x "${script}" ]]; then
+    chmod +x "${script}"
+  fi
+
+  local require_wifi="false"
+  if [[ -f "${ENV_FILE}" ]]; then
+    # shellcheck disable=SC1090
+    source "${ENV_FILE}" || true
+    require_wifi="${REQUIRE_WIFI:-false}"
+  fi
+
+  if [[ "${require_wifi,,}" == "true" ]]; then
+    echo "Running Wi-Fi connect script (REQUIRE_WIFI=true): ${script}"
+    "${script}"
+  else
+    run_non_blocking_step "Wi-Fi connect script" "${script}"
+  fi
 }
 
 setup_shell_env() {
@@ -741,7 +805,9 @@ fi
 
 write_default_env
 install_wifi_service
-install_openmower_autostart_service
+run_non_blocking_step "OpenMower autostart service install" install_openmower_autostart_service
+setup_aic8800_dongle
+connect_wifi_now
 setup_shell_env
 warn_if_env_needs_editing
 
@@ -784,3 +850,12 @@ OpenMower autostart:
   The openmower-autostart.service is enabled and will launch:
     roslaunch open_mower open_mower.launch
 EOF
+
+if [[ "${#NON_BLOCKING_FAILURES[@]}" -gt 0 ]]; then
+  echo
+  echo "Optional steps with failures (setup continued):"
+  for s in "${NON_BLOCKING_FAILURES[@]}"; do
+    echo "  - ${s}"
+  done
+  echo "Review logs and rerun specific helper scripts as needed."
+fi
