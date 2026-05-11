@@ -575,11 +575,96 @@ void readMapFromFile() {
   }
 }
 
+// Calculate distance from point to line segment
+double pointToSegmentDistance(const Point& p, const Point& a, const Point& b) {
+  double dx = b.x - a.x;
+  double dy = b.y - a.y;
+  double len_sq = dx * dx + dy * dy;
+
+  if (len_sq == 0.0) return std::sqrt((p.x - a.x) * (p.x - a.x) + (p.y - a.y) * (p.y - a.y));
+
+  double t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len_sq;
+  t = std::max(0.0, std::min(1.0, t));
+
+  double closest_x = a.x + t * dx;
+  double closest_y = a.y + t * dy;
+
+  return std::sqrt((p.x - closest_x) * (p.x - closest_x) + (p.y - closest_y) * (p.y - closest_y));
+}
+
+// Check if polygon self-intersects and return minimum intersection distance
+// Returns -1 if no intersection, otherwise returns the minimum "penetration" distance
+double getPolygonSelfIntersectionSeverity(const Polygon& poly) {
+  if (poly.size() < 4) return -1;
+
+  double min_intersection_distance = 1e6;
+  bool has_intersection = false;
+
+  // Check each edge for near-intersections with non-adjacent edges
+  for (size_t i = 0; i < poly.size(); i++) {
+    const Point& p1 = poly[i];
+    const Point& p2 = poly[(i + 1) % poly.size()];
+
+    // Skip checking against immediately adjacent edges
+    for (size_t j = i + 2; j < poly.size(); j++) {
+      if (i == 0 && j == poly.size() - 1) continue;  // Skip adjacent at wrap
+
+      const Point& p3 = poly[j];
+      const Point& p4 = poly[(j + 1) % poly.size()];
+
+      // Check minimum distances between endpoints
+      // If any endpoint is very close to the opposite segment, it's a self-intersection
+      double d1 = pointToSegmentDistance(p1, p3, p4);
+      double d2 = pointToSegmentDistance(p2, p3, p4);
+      double d3 = pointToSegmentDistance(p3, p1, p2);
+      double d4 = pointToSegmentDistance(p4, p1, p2);
+
+      double min_d = std::min({d1, d2, d3, d4});
+      if (min_d < 1e-3) {  // Essentially touching
+        has_intersection = true;
+        min_intersection_distance = 0.0;
+      } else if (min_d < 0.05) {  // Very close
+        has_intersection = true;
+        min_intersection_distance = std::min(min_intersection_distance, min_d);
+      }
+    }
+  }
+
+  return has_intersection ? min_intersection_distance : -1;
+}
+
 bool addMowingArea(mower_map::AddMowingAreaSrvRequest& req, mower_map::AddMowingAreaSrvResponse& res) {
   ROS_INFO_STREAM("Got addMowingArea call");
 
+  Polygon area_poly = geometryPolygonToInternal(req.area.area);
+
+  // Validate main area polygon
+  double severity = getPolygonSelfIntersectionSeverity(area_poly);
+
+  // Tolerance for self-intersections (in meters) - allows small artifacts from calibration drift
+  const double INTERSECTION_TOLERANCE = 0.1;
+
+  if (severity >= 0.0 && severity > INTERSECTION_TOLERANCE) {
+    ROS_ERROR_STREAM("Polygon self-intersects with severity " << severity << "m (tolerance: " << INTERSECTION_TOLERANCE << "m)");
+    return false;
+  }
+
+  if (severity >= 0.0) {
+    ROS_WARN_STREAM("Polygon has small self-intersection (" << severity << "m), allowing due to tolerance");
+  }
+
   map_data.areas.push_back(mowerMapAreaToInternal(req.area.area, req.isNavigationArea ? "nav" : "mow", req.area.name));
+
+  // Validate obstacles
   for (const auto& obstacle : req.area.obstacles) {
+    Polygon obs_poly = geometryPolygonToInternal(obstacle);
+    double obs_severity = getPolygonSelfIntersectionSeverity(obs_poly);
+
+    if (obs_severity >= 0.0 && obs_severity > INTERSECTION_TOLERANCE) {
+      ROS_ERROR_STREAM("Obstacle polygon self-intersects with severity " << obs_severity << "m");
+      return false;
+    }
+
     map_data.areas.push_back(mowerMapAreaToInternal(obstacle, "obstacle", ""));
   }
 
