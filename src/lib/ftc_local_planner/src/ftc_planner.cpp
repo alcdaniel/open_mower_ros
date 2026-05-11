@@ -567,7 +567,9 @@ namespace ftc_local_planner
                 cmd_vel.twist.angular.z = ang_speed;
             }
         }
-        else if (current_state == PRE_ROTATE)
+
+        // Log PRE_ROTATE state
+        if (current_state == PRE_ROTATE)
         {
             ROS_INFO_STREAM_THROTTLE(0.5, "[FTC] PRE_ROTATE: angle_err=" << angle_error
                 << " heading_rad=" << current_heading_rad << " lon_err=" << lon_error
