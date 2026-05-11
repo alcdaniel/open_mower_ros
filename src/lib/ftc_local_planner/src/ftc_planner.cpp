@@ -425,11 +425,17 @@ namespace ftc_local_planner
             viz.pose = tf2::toMsg(current_control_point);
             global_point_pub.publish(viz);
         }
-        auto map_to_base = tf_buffer->lookupTransform("base_link", "map", ros::Time(), ros::Duration(1.0));
-        tf2::doTransform(current_control_point, local_control_point, map_to_base);
 
-        lat_error = local_control_point.translation().y();
-        lon_error = local_control_point.translation().x();
+        // Convert current pose to Eigen, transform goal to robot frame (no TF latency)
+        Eigen::Vector3d robot_pos(pose.pose.position.x, pose.pose.position.y, 0);
+        Eigen::Vector3d goal_pos = current_control_point.translation();
+        Eigen::Vector3d diff = goal_pos - robot_pos;
+
+        // Rotate diff to robot frame using current heading
+        double cos_h = std::cos(-current_heading_rad);
+        double sin_h = std::sin(-current_heading_rad);
+        lon_error = diff.x() * cos_h - diff.y() * sin_h;
+        lat_error = diff.x() * sin_h + diff.y() * cos_h;
 
         // Use IMU heading directly (faster, ~40ms vs TF latency ~100-200ms)
         Eigen::Quaternion<double> goal_quat(current_control_point.linear());
