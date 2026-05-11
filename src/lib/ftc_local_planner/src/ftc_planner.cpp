@@ -234,6 +234,7 @@ namespace ftc_local_planner
                 is_crashed = true;
                 return FINISHED;
             }
+            ROS_DEBUG_STREAM("PRE_ROTATE| err_deg=" << (abs(angle_error)*180/M_PI) << " i_err=" << i_angle_error << " kp=" << config.kp_ang << " ki=" << config.ki_ang << " kd=" << config.kd_ang << " dt=" << (time_in_current_state()) << "s");
             if (abs(angle_error) * (180.0 / M_PI) < config.max_goal_angle_error)
             {
                 ROS_INFO_STREAM("FTCLocalPlannerROS: PRE_ROTATE finished. Starting following");
