@@ -219,6 +219,14 @@ struct StateSnapshot {
   std::vector<std::vector<PointXY>> pending_obstacles;
 };
 
+struct MapSummary {
+  bool parsed = false;
+  bool has_valid_area = false;
+  bool has_dock = false;
+  int areas_count = 0;
+  int docks_count = 0;
+};
+
 }  // namespace
 
 class MowerIosBridgeNode {
@@ -1190,6 +1198,141 @@ class MowerIosBridgeNode {
         {"sonarPhase", 0},
         {"wheelStatusValue", wheel_status},
     };
+  }
+
+  MapSummary summarizeMap(const StateSnapshot& snap) const {
+    MapSummary out;
+    if (snap.map_json.empty()) return out;
+    json map_doc = json::parse(snap.map_json, nullptr, false);
+    if (map_doc.is_discarded() || !map_doc.is_object()) return out;
+    out.parsed = true;
+
+    const json areas = map_doc.value("areas", json::array());
+    const json docks = map_doc.value("docking_stations", json::array());
+    out.areas_count = areas.is_array() ? static_cast<int>(areas.size()) : 0;
+    out.docks_count = docks.is_array() ? static_cast<int>(docks.size()) : 0;
+    out.has_dock = out.docks_count > 0;
+
+    if (areas.is_array()) {
+      for (const auto& area : areas) {
+        if (!area.is_object()) continue;
+        const json area_polygon = area.value("area", json::object());
+        const json pts = area_polygon.value("points", json::array());
+        if (pts.is_array() && pts.size() >= 3) {
+          out.has_valid_area = true;
+          break;
+        }
+      }
+    }
+    return out;
+  }
+
+  bool stateAllowsStart(const StateSnapshot& snap) const {
+    if (!snap.has_high_level) return false;
+    const std::string op = operatingState(snap);
+    if (op == "parked" || op == "docked" || op == "idle") return true;
+
+    std::string sub = snap.high_level.sub_state_name;
+    for (char& c : sub) c = static_cast<char>(std::toupper(c));
+    if (sub.find("PAUSE") != std::string::npos) return true;
+    return false;
+  }
+
+  json mowerStatePayload() {
+    const StateSnapshot snap = snapshot();
+    const MapSummary map = summarizeMap(snap);
+    const double now = wallNowSec();
+
+    const bool emergency_active =
+        snap.has_emergency && (snap.emergency.active_emergency || snap.emergency.latched_emergency);
+    const bool low_level_fresh = snap.has_low_level && ((now - snap.low_level_seen) <= 3.0);
+    const bool high_level_fresh = snap.has_high_level && ((now - snap.high_level_seen) <= 5.0);
+    const bool pose_fresh = snap.has_pose && ((now - snap.pose_seen) <= 2.0);
+    const bool gps_fixed = gpsFixTypeOrNone(snap) == "fixed";
+    const bool high_level_service_ready =
+        ros::service::exists("/mower_service/high_level_control", false);
+    const bool start_state_ok = stateAllowsStart(snap);
+
+    json checks = json::object();
+    checks["megaConnected"] = snap.mega_connected;
+    checks["lowLevelFresh"] = low_level_fresh;
+    checks["highLevelFresh"] = high_level_fresh;
+    checks["highLevelServiceReady"] = high_level_service_ready;
+    checks["mapValid"] = map.has_valid_area;
+    checks["dockConfigured"] = map.has_dock;
+    checks["gpsRtkFixed"] = gps_fixed;
+    checks["poseFresh"] = pose_fresh;
+    checks["emergencyClear"] = !emergency_active;
+    checks["startStateAllowed"] = start_state_ok;
+
+    json reasons = json::array();
+    if (!snap.mega_connected) reasons.push_back("Mega no conectado");
+    if (!low_level_fresh) reasons.push_back("Sin telemetría low-level fresca (/ll/mower_status)");
+    if (!high_level_fresh) reasons.push_back("Sin estado high-level fresco (/mower_logic/current_state)");
+    if (!high_level_service_ready) reasons.push_back("Servicio /mower_service/high_level_control no disponible");
+    if (!map.has_valid_area) reasons.push_back("No hay mapa válido (área con >=3 puntos)");
+    if (!map.has_dock) reasons.push_back("No hay docking station configurado");
+    if (!gps_fixed) reasons.push_back("GPS no está en RTK Fixed");
+    if (!pose_fresh) reasons.push_back("Pose no fresca");
+    if (emergency_active) reasons.push_back("Emergencia activa/latched");
+    if (!start_state_ok) reasons.push_back("El estado actual no acepta start (usa IDLE/PAUSED)");
+
+    const bool can_start = reasons.empty();
+    const double battery_voltage = firstValid({
+        snap.has_power ? static_cast<double>(snap.power.battery_voltage_adc) : 0.0,
+        snap.has_power ? static_cast<double>(snap.power.battery_voltage_bms) : 0.0,
+        snap.has_power ? static_cast<double>(snap.power.battery_voltage_chg) : 0.0,
+    });
+
+    return json{
+        {"ok", true},
+        {"stateName", snap.has_high_level ? snap.high_level.state_name : "UNKNOWN"},
+        {"subStateName", snap.has_high_level ? snap.high_level.sub_state_name : "UNKNOWN"},
+        {"state", operatingState(snap)},
+        {"currentArea", snap.has_high_level ? static_cast<int>(snap.high_level.current_area) : -1},
+        {"currentPath", snap.has_high_level ? static_cast<int>(snap.high_level.current_path) : -1},
+        {"currentPathIndex", snap.has_high_level ? static_cast<int>(snap.high_level.current_path_index) : -1},
+        {"gpsQualityPercent", snap.has_high_level ? static_cast<int>(snap.high_level.gps_quality_percent) : -1},
+        {"batteryPercent", snap.has_high_level ? static_cast<int>(snap.high_level.battery_percent) : -1},
+        {"batteryVoltage", battery_voltage},
+        {"emergency", emergency_active},
+        {"emergencyReason", emergencyReasonText(snap)},
+        {"isCharging", (snap.has_low_level && snap.low_level.is_charging) ||
+                           (snap.has_power && snap.power.charge_current > 0.1f)},
+        {"canStartMowing", can_start},
+        {"cannotStartReasons", reasons},
+        {"checks", checks},
+        {"mapSummary",
+         {{"parsed", map.parsed},
+          {"areasCount", map.areas_count},
+          {"docksCount", map.docks_count},
+          {"hasValidArea", map.has_valid_area},
+          {"hasDock", map.has_dock}}},
+    };
+  }
+
+  json startMowingWithChecks() {
+    const json state = mowerStatePayload();
+    const bool can_start = state.value("canStartMowing", false);
+    if (!can_start) {
+      return json{
+          {"ok", false},
+          {"error", "Precondiciones no cumplidas para iniciar corte"},
+          {"state", state},
+      };
+    }
+    setRequestedMode("auto");
+    callHighLevel(mower_msgs::HighLevelControlSrvRequest::COMMAND_START);
+    return json{{"ok", true}, {"state", mowerStatePayload()}};
+  }
+
+  json homeMowingWithChecks() {
+    const StateSnapshot snap = snapshot();
+    checkHardware(snap, true);
+    setRequestedMode("dock");
+    setManualActive(false);
+    callHighLevel(mower_msgs::HighLevelControlSrvRequest::COMMAND_HOME);
+    return json{{"ok", true}, {"state", mowerStatePayload()}};
   }
 
   json settingsPayload() {
@@ -2334,12 +2477,18 @@ class MowerIosBridgeNode {
         if (op == "status") {
           out = statusPayload();
           out["ok"] = true;
+        } else if (op == "mowerState") {
+          out = mowerStatePayload();
         } else if (op == "telemetry") {
           out = telemetryPayload();
           out["ok"] = true;
         } else if (op == "health") {
           out = healthPayload();
           out["ok"] = true;
+        } else if (op == "mowerStart") {
+          out = startMowingWithChecks();
+        } else if (op == "mowerHome") {
+          out = homeMowingWithChecks();
         } else if (op == "command") {
           const std::string command = in.value("command", "");
           handleCommand(command);
@@ -2388,6 +2537,9 @@ class MowerIosBridgeNode {
       if (req.method() == http::verb::get && path == "/api/status") {
         return jsonResponse(http::status::ok, statusPayload());
       }
+      if (req.method() == http::verb::get && path == "/api/mower/state") {
+        return jsonResponse(http::status::ok, mowerStatePayload());
+      }
       if (req.method() == http::verb::get && path == "/api/telemetry") {
         return jsonResponse(http::status::ok, telemetryPayload());
       }
@@ -2414,6 +2566,20 @@ class MowerIosBridgeNode {
           return jsonResponse(http::status::ok, json{{"ok", true}});
         } catch (const std::exception& exc) {
           ROS_WARN("[ios_bridge] command '%s' rejected: %s", body.value("command", "").c_str(), exc.what());
+          return jsonResponse(http::status::ok, json{{"ok", false}, {"error", exc.what()}});
+        }
+      }
+      if (req.method() == http::verb::post && path == "/api/mower/start") {
+        try {
+          return jsonResponse(http::status::ok, startMowingWithChecks());
+        } catch (const std::exception& exc) {
+          return jsonResponse(http::status::ok, json{{"ok", false}, {"error", exc.what()}});
+        }
+      }
+      if (req.method() == http::verb::post && path == "/api/mower/home") {
+        try {
+          return jsonResponse(http::status::ok, homeMowingWithChecks());
+        } catch (const std::exception& exc) {
           return jsonResponse(http::status::ok, json{{"ok", false}, {"error", exc.what()}});
         }
       }
