@@ -27,6 +27,38 @@ extern bool setGPS(bool enabled);
 
 AreaRecordingBehavior AreaRecordingBehavior::INSTANCE;
 
+// Check if two line segments intersect
+static bool segmentsIntersect(double x1, double y1, double x2, double y2,
+                               double x3, double y3, double x4, double y4) {
+  auto ccw = [](double ax, double ay, double bx, double by, double cx, double cy) {
+    return (cy - ay) * (bx - ax) > (by - ay) * (cx - ax);
+  };
+  return ccw(x1, y1, x3, y3, x4, y4) != ccw(x2, y2, x3, y3, x4, y4) &&
+         ccw(x1, y1, x2, y2, x3, y3) != ccw(x1, y1, x2, y2, x4, y4);
+}
+
+// Check if adding newPoint would cause polygon self-intersection
+static bool wouldCauseSelfIntersection(const geometry_msgs::Polygon& polygon,
+                                        double newX, double newY) {
+  if (polygon.points.size() < 2) return false;
+
+  // Last point in polygon
+  auto lastPt = polygon.points.back();
+
+  // Check new segment against all existing edges (skip last 2 to avoid adjacent edges)
+  for (size_t i = 0; i + 1 < polygon.points.size() - 1; i++) {
+    auto p1 = polygon.points[i];
+    auto p2 = polygon.points[i + 1];
+
+    if (segmentsIntersect(lastPt.x, lastPt.y, newX, newY,
+                          p1.x, p1.y, p2.x, p2.y)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 std::string AreaRecordingBehavior::state_name() {
   return "AREA_RECORDING";
 }
@@ -402,30 +434,38 @@ bool AreaRecordingBehavior::recordNewPolygon(geometry_msgs::Polygon& polygon, xb
       bool is_point_manual_collected = !auto_point_collecting && collect_point && is_new_point_far_enough;
 
       if (is_point_auto_collected || is_point_manual_collected) {
-        geometry_msgs::Point32 pt;
-        pt.x = pose_in_map.position.x;
-        pt.y = pose_in_map.position.y;
-        pt.z = 0.0;
-        //                    ROS_INFO_STREAM("Adding Point: " << pt);
-        polygon.points.push_back(pt);
-        {
-          geometry_msgs::Point vpt;
-          vpt.x = pt.x;
-          vpt.y = pt.y;
-          marker.points.push_back(vpt);
-        }
+        // Check if adding this point would cause self-intersection
+        if (wouldCauseSelfIntersection(polygon, pose_in_map.position.x, pose_in_map.position.y)) {
+          ROS_WARN_STREAM("Rejecting point - would cause self-intersection");
+          if (is_point_manual_collected) {
+            collect_point = false;
+          }
+        } else {
+          geometry_msgs::Point32 pt;
+          pt.x = pose_in_map.position.x;
+          pt.y = pose_in_map.position.y;
+          pt.z = 0.0;
+          //                    ROS_INFO_STREAM("Adding Point: " << pt);
+          polygon.points.push_back(pt);
+          {
+            geometry_msgs::Point vpt;
+            vpt.x = pt.x;
+            vpt.y = pt.y;
+            marker.points.push_back(vpt);
+          }
 
-        marker.header.seq++;
-        marker.header.stamp = ros::Time::now();
-        marker.header.frame_id = "map";
+          marker.header.seq++;
+          marker.header.stamp = ros::Time::now();
+          marker.header.frame_id = "map";
 
-        marker_pub.publish(marker);
+          marker_pub.publish(marker);
 
-        poly_viz.polygon.points.push_back(pt);
-        map_overlay_pub.publish(resultOverlay);
+          poly_viz.polygon.points.push_back(pt);
+          map_overlay_pub.publish(resultOverlay);
 
-        if (is_point_manual_collected) {
-          collect_point = false;
+          if (is_point_manual_collected) {
+            collect_point = false;
+          }
         }
       }
     }
