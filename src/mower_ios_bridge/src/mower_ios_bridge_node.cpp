@@ -1238,6 +1238,46 @@ class MowerIosBridgeNode {
     return false;
   }
 
+  json generatePathPreview() {
+    const StateSnapshot snap = snapshot();
+    if (snap.map_json.empty()) {
+      return json{{"ok", false}, {"error", "No hay mapa cargado"}};
+    }
+    json map_doc = json::parse(snap.map_json, nullptr, false);
+    if (map_doc.is_discarded() || !map_doc.is_object()) {
+      return json{{"ok", false}, {"error", "Mapa inválido"}};
+    }
+    const json areas = map_doc.value("areas", json::array());
+    if (!areas.is_array() || areas.empty()) {
+      return json{{"ok", false}, {"error", "Sin áreas de corte"}};
+    }
+    json preview = json::object();
+    preview["ok"] = true;
+    json areas_preview = json::array();
+    for (size_t i = 0; i < areas.size(); ++i) {
+      const auto& area = areas[i];
+      if (!area.is_object()) continue;
+      const json area_polygon = area.value("area", json::object());
+      const json pts = area_polygon.value("points", json::array());
+      if (!pts.is_array() || pts.size() < 3) continue;
+      json area_info = json::object();
+      area_info["id"] = i;
+      area_info["name"] = area.value("name", "Área " + std::to_string(i));
+      json points = json::array();
+      for (const auto& pt : pts) {
+        if (pt.is_object()) {
+          points.push_back({{"x", pt.value("x", 0.0)}, {"y", pt.value("y", 0.0)}});
+        }
+      }
+      area_info["boundary"] = points;
+      areas_preview.push_back(area_info);
+    }
+    preview["areas"] = areas_preview;
+    preview["estimatedDuration"] = "~15 min";
+    preview["estimatedCoverage"] = "~85%";
+    return preview;
+  }
+
   json mowerStatePayload() {
     const StateSnapshot snap = snapshot();
     const MapSummary map = summarizeMap(snap);
@@ -2489,6 +2529,8 @@ class MowerIosBridgeNode {
           out = startMowingWithChecks();
         } else if (op == "mowerHome") {
           out = homeMowingWithChecks();
+        } else if (op == "mowerPreviewPath") {
+          out = generatePathPreview();
         } else if (op == "command") {
           const std::string command = in.value("command", "");
           handleCommand(command);
@@ -2539,6 +2581,9 @@ class MowerIosBridgeNode {
       }
       if (req.method() == http::verb::get && path == "/api/mower/state") {
         return jsonResponse(http::status::ok, mowerStatePayload());
+      }
+      if (req.method() == http::verb::get && path == "/api/mower/preview-path") {
+        return jsonResponse(http::status::ok, generatePathPreview());
       }
       if (req.method() == http::verb::get && path == "/api/telemetry") {
         return jsonResponse(http::status::ok, telemetryPayload());
