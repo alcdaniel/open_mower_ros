@@ -12,7 +12,7 @@
  *   ll/emergency                    mower_msgs/Emergency
  *   ll/mower_status                 mower_msgs/Status
  *   ll/power                        mower_msgs/Power
- *   ll/diff_drive/measured_twist    geometry_msgs/TwistStamped
+ *   ll/diff_drive/measured_twist    geometry_msgs/TwistStamped   (from encoder speeds)
  *   ll/diff_drive/left_esc_status   mower_msgs/ESCStatus
  *   ll/diff_drive/right_esc_status  mower_msgs/ESCStatus
  *   mega/sonar/front                sensor_msgs/Range   (cm → metres, 999 → ∞)
@@ -28,6 +28,10 @@
  *   mega/imu_gyro                   sensor_msgs/Imu     (roll/pitch/yaw + gyro rates)
  *   mega/cfg                        std_msgs/String     (key=value, one per setting)
  *   mega/cfg_loaded                 std_msgs/Bool       (true when full dump received)
+ *
+ * Encoder frames from the Mega firmware:
+ *   ENC,r_motor,r_wheel,r_speed,l_motor,l_wheel,l_speed,avg,diff
+ *   ODOM,avg_dist,left_dist,right_dist
  *
  * Topics subscribed (in addition to above):
  *   mega/cfgget                     std_msgs/Bool       (publish true to request settings)
@@ -225,6 +229,22 @@ public:
         , tilt_(false)
         , wire_(false)
         , sonar_{999, 999, 999}
+        , encoder_data_valid_(false)
+        , encoder_r_motor_rpm_(0.0)
+        , encoder_r_wheel_rpm_(0.0)
+        , encoder_r_speed_ms_(0.0)
+        , encoder_l_motor_rpm_(0.0)
+        , encoder_l_wheel_rpm_(0.0)
+        , encoder_l_speed_ms_(0.0)
+        , encoder_avg_speed_ms_(0.0)
+        , encoder_speed_diff_ms_(0.0)
+        , encoder_odom_initialized_(false)
+        , encoder_prev_avg_dist_m_(0.0)
+        , encoder_prev_left_dist_m_(0.0)
+        , encoder_prev_right_dist_m_(0.0)
+        , encoder_odom_x_m_(0.0)
+        , encoder_odom_y_m_(0.0)
+        , encoder_odom_theta_rad_(0.0)
     {
         ros::NodeHandle nh;
         ros::NodeHandle pnh("~");
@@ -344,6 +364,22 @@ private:
     int         gyro_x_raw_, gyro_y_raw_, gyro_z_raw_;
     bool        bumper_, bumper_left_, bumper_right_, rain_, tilt_, wire_;
     int         sonar_[3];
+    bool        encoder_data_valid_;
+    double      encoder_r_motor_rpm_;
+    double      encoder_r_wheel_rpm_;
+    double      encoder_r_speed_ms_;
+    double      encoder_l_motor_rpm_;
+    double      encoder_l_wheel_rpm_;
+    double      encoder_l_speed_ms_;
+    double      encoder_avg_speed_ms_;
+    double      encoder_speed_diff_ms_;
+    bool        encoder_odom_initialized_;
+    double      encoder_prev_avg_dist_m_;
+    double      encoder_prev_left_dist_m_;
+    double      encoder_prev_right_dist_m_;
+    double      encoder_odom_x_m_;
+    double      encoder_odom_y_m_;
+    double      encoder_odom_theta_rad_;
 
     // ── Serial (write path guarded by write_mutex_) ───────────────────────────
     serial::Serial ser_;
@@ -499,6 +535,120 @@ private:
         esc.temperature_pcb = 0.0f;
         pub_esc_l_.publish(esc);
         pub_esc_r_.publish(esc);
+
+        geometry_msgs::TwistStamped zero_twist;
+        zero_twist.header.stamp = now;
+        zero_twist.header.frame_id = "base_link";
+        zero_twist.twist.linear.x = 0.0;
+        zero_twist.twist.linear.y = 0.0;
+        zero_twist.twist.angular.z = 0.0;
+        pub_twist_.publish(zero_twist);
+    }
+
+    void publishEncoderTwist()
+    {
+        geometry_msgs::TwistStamped ts;
+        ts.header.stamp = ros::Time::now();
+        ts.header.frame_id = "base_link";
+
+        double avg_speed_ms = 0.0;
+        double diff_speed_ms = 0.0;
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            avg_speed_ms = encoder_avg_speed_ms_;
+            diff_speed_ms = encoder_speed_diff_ms_;
+        }
+
+        ts.twist.linear.x = avg_speed_ms;
+        ts.twist.linear.y = 0.0;
+        ts.twist.angular.z = (wheel_dist_ > 1e-6) ? (diff_speed_ms / wheel_dist_) : 0.0;
+        pub_twist_.publish(ts);
+    }
+
+    void publishEncoderOdomFromDistances(double avg_dist_m,
+                                         double left_dist_m,
+                                         double right_dist_m)
+    {
+        nav_msgs::Odometry odom;
+        odom.header.stamp = ros::Time::now();
+        odom.header.frame_id = "odom";
+        odom.child_frame_id = "base_link";
+
+        double x = 0.0;
+        double y = 0.0;
+        double theta = 0.0;
+        double vx = 0.0;
+        double wz = 0.0;
+
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            if (!encoder_odom_initialized_) {
+                encoder_odom_initialized_ = true;
+                encoder_prev_avg_dist_m_   = avg_dist_m;
+                encoder_prev_left_dist_m_  = left_dist_m;
+                encoder_prev_right_dist_m_ = right_dist_m;
+            } else {
+                const double dl = left_dist_m  - encoder_prev_left_dist_m_;
+                const double dr = right_dist_m - encoder_prev_right_dist_m_;
+                if (std::fabs(dl) > 5.0 || std::fabs(dr) > 5.0) {
+                    ROS_WARN_THROTTLE(1.0, "[mega_bridge] encoder odom reset detected; reinitializing pose");
+                    encoder_prev_avg_dist_m_   = avg_dist_m;
+                    encoder_prev_left_dist_m_  = left_dist_m;
+                    encoder_prev_right_dist_m_ = right_dist_m;
+                    encoder_odom_x_m_ = 0.0;
+                    encoder_odom_y_m_ = 0.0;
+                    encoder_odom_theta_rad_ = 0.0;
+                    encoder_odom_initialized_ = true;
+                } else {
+                    const double ds = 0.5 * (dl + dr);
+                    const double dtheta = (wheel_dist_ > 1e-6) ? ((dr - dl) / wheel_dist_) : 0.0;
+                    const double theta_mid = encoder_odom_theta_rad_ + 0.5 * dtheta;
+
+                    encoder_odom_x_m_ += ds * std::cos(theta_mid);
+                    encoder_odom_y_m_ += ds * std::sin(theta_mid);
+                    encoder_odom_theta_rad_ = std::atan2(
+                        std::sin(encoder_odom_theta_rad_ + dtheta),
+                        std::cos(encoder_odom_theta_rad_ + dtheta));
+
+                    encoder_prev_avg_dist_m_   = avg_dist_m;
+                    encoder_prev_left_dist_m_   = left_dist_m;
+                    encoder_prev_right_dist_m_  = right_dist_m;
+                }
+            }
+
+            x = encoder_odom_x_m_;
+            y = encoder_odom_y_m_;
+            theta = encoder_odom_theta_rad_;
+            vx = encoder_avg_speed_ms_;
+            wz = (wheel_dist_ > 1e-6) ? (encoder_speed_diff_ms_ / wheel_dist_) : 0.0;
+        }
+
+        odom.pose.pose.position.x = x;
+        odom.pose.pose.position.y = y;
+        odom.pose.pose.position.z = 0.0;
+
+        const double half_yaw = theta * 0.5;
+        odom.pose.pose.orientation.x = 0.0;
+        odom.pose.pose.orientation.y = 0.0;
+        odom.pose.pose.orientation.z = std::sin(half_yaw);
+        odom.pose.pose.orientation.w = std::cos(half_yaw);
+
+        odom.twist.twist.linear.x = vx;
+        odom.twist.twist.linear.y = 0.0;
+        odom.twist.twist.angular.z = wz;
+
+        // Position drift is expected; use the EKF/GPS stack to correct it.
+        odom.pose.covariance[0]  = 0.20;
+        odom.pose.covariance[7]  = 0.20;
+        odom.pose.covariance[14] = 1e6;
+        odom.pose.covariance[21] = 1e6;
+        odom.pose.covariance[28] = 1e6;
+        odom.pose.covariance[35] = 0.03;
+        odom.twist.covariance[0]  = 0.02;
+        odom.twist.covariance[7]  = 1e6;
+        odom.twist.covariance[35] = 0.02;
+
+        pub_odom_.publish(odom);
     }
 
     void cbStatusTimer(const ros::TimerEvent&)
@@ -713,8 +863,6 @@ private:
 
         } else if (type == "PWM") {
             if (fields.size() >= 2) {
-                geometry_msgs::TwistStamped ts;
-                ts.header.stamp = ros::Time::now();
                 {
                     std::lock_guard<std::mutex> lk(state_mutex_);
                     int pl = pwm_l_;
@@ -726,12 +874,19 @@ private:
                     }
                     pwm_l_ = pl;
                     pwm_r_ = pr;
+                }
+                // Keep PWM as command-state only. Measured twist is now published
+                // from the encoder telemetry (ENC) so localization uses actual speed.
+                if (!encoder_data_valid_) {
+                    geometry_msgs::TwistStamped ts;
+                    ts.header.stamp = ros::Time::now();
+                    ts.header.frame_id = "base_link";
                     double vl = static_cast<double>(pwm_l_) / max_pwm_;
                     double vr = static_cast<double>(pwm_r_) / max_pwm_;
                     ts.twist.linear.x  = (vl + vr) / 2.0;
                     ts.twist.angular.z = (vr - vl) / wheel_dist_;
+                    pub_twist_.publish(ts);
                 }
-                pub_twist_.publish(ts);
             }
 
         } else if (type == "STATE") {
@@ -977,9 +1132,50 @@ private:
                 }
             }
 
+        } else if (type == "ENC") {
+            // ENC,r_motor,r_wheel,r_speed,l_motor,l_wheel,l_speed,avg,diff
+            if (fields.size() >= 8) {
+                double r_motor = encoder_r_motor_rpm_;
+                double r_wheel = encoder_r_wheel_rpm_;
+                double r_speed  = encoder_r_speed_ms_;
+                double l_motor = encoder_l_motor_rpm_;
+                double l_wheel = encoder_l_wheel_rpm_;
+                double l_speed  = encoder_l_speed_ms_;
+                double avg      = encoder_avg_speed_ms_;
+                double diff     = encoder_speed_diff_ms_;
+
+                bool ok = parseDoubleField(fields, 0, encoder_r_motor_rpm_, r_motor) &&
+                          parseDoubleField(fields, 1, encoder_r_wheel_rpm_, r_wheel) &&
+                          parseDoubleField(fields, 2, encoder_r_speed_ms_,  r_speed) &&
+                          parseDoubleField(fields, 3, encoder_l_motor_rpm_, l_motor) &&
+                          parseDoubleField(fields, 4, encoder_l_wheel_rpm_, l_wheel) &&
+                          parseDoubleField(fields, 5, encoder_l_speed_ms_,  l_speed) &&
+                          parseDoubleField(fields, 6, encoder_avg_speed_ms_, avg) &&
+                          parseDoubleField(fields, 7, encoder_speed_diff_ms_, diff);
+                if (!ok) {
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid ENC fields");
+                }
+
+                {
+                    std::lock_guard<std::mutex> lk(state_mutex_);
+                    encoder_r_motor_rpm_ = r_motor;
+                    encoder_r_wheel_rpm_  = r_wheel;
+                    encoder_r_speed_ms_   = r_speed;
+                    encoder_l_motor_rpm_  = l_motor;
+                    encoder_l_wheel_rpm_  = l_wheel;
+                    encoder_l_speed_ms_   = l_speed;
+                    encoder_avg_speed_ms_ = avg;
+                    encoder_speed_diff_ms_ = diff;
+                    encoder_data_valid_    = true;
+                }
+
+                publishEncoderTwist();
+            }
+
         } else if (type == "ODOM") {
-            // Odometry feedback: ODOM,x,y,theta,vx,wz
-            if (fields.size() >= 6) {
+            // Legacy format: ODOM,x,y,theta,vx,wz
+            // New encoder format: ODOM,avg_dist,left_dist,right_dist
+            if (fields.size() >= 5) {
                 nav_msgs::Odometry odom;
                 odom.header.stamp = ros::Time::now();
                 odom.header.frame_id = "odom";
@@ -991,46 +1187,50 @@ private:
                     !parseDoubleField(fields, 2, 0.0, theta) ||
                     !parseDoubleField(fields, 3, 0.0, vx) ||
                     !parseDoubleField(fields, 4, 0.0, wz)) {
-                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid ODOM fields");
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid legacy ODOM fields");
                 }
 
-                // Convert theta from degrees to radians
                 const double pi = 3.14159265358979323846;
-                double theta_rad = theta * pi / 180.0;
+                const double theta_rad = theta * pi / 180.0;
 
-                // Position
                 odom.pose.pose.position.x = x;
                 odom.pose.pose.position.y = y;
                 odom.pose.pose.position.z = 0.0;
 
-                // Orientation (quaternion from yaw)
-                double cy = std::cos(theta_rad * 0.5);
-                double sy = std::sin(theta_rad * 0.5);
+                const double cy = std::cos(theta_rad * 0.5);
+                const double sy = std::sin(theta_rad * 0.5);
                 odom.pose.pose.orientation.x = 0.0;
                 odom.pose.pose.orientation.y = 0.0;
                 odom.pose.pose.orientation.z = sy;
                 odom.pose.pose.orientation.w = cy;
 
-                // Velocity
                 odom.twist.twist.linear.x = vx;
                 odom.twist.twist.linear.y = 0.0;
                 odom.twist.twist.angular.z = wz;
 
-                // Covariances tuned for IMU-based dead reckoning (no encoders)
-                // Position drifts significantly without encoder feedback;
-                // robot_localization should weight GPS more than odom for x,y.
-                // Theta is more reliable (from IMU/compass), keep low variance.
-                odom.pose.covariance[0]  = 1.0;   // x variance (high - drifts)
-                odom.pose.covariance[7]  = 1.0;   // y variance (high - drifts)
-                odom.pose.covariance[14] = 1e6;   // z (unused 2D)
-                odom.pose.covariance[21] = 1e6;   // roll
-                odom.pose.covariance[28] = 1e6;   // pitch
-                odom.pose.covariance[35] = 0.05;  // theta variance (low - IMU good)
-                odom.twist.covariance[0]  = 0.10; // vx variance (commanded ≈ actual)
-                odom.twist.covariance[7]  = 1e6;  // vy (no slip assumed)
-                odom.twist.covariance[35] = 0.05; // wz variance
+                odom.pose.covariance[0]  = 1.0;
+                odom.pose.covariance[7]  = 1.0;
+                odom.pose.covariance[14] = 1e6;
+                odom.pose.covariance[21] = 1e6;
+                odom.pose.covariance[28] = 1e6;
+                odom.pose.covariance[35] = 0.05;
+                odom.twist.covariance[0]  = 0.10;
+                odom.twist.covariance[7]  = 1e6;
+                odom.twist.covariance[35] = 0.05;
 
                 pub_odom_.publish(odom);
+            } else if (fields.size() >= 3) {
+                double avg_dist = encoder_prev_avg_dist_m_;
+                double left_dist = encoder_prev_left_dist_m_;
+                double right_dist = encoder_prev_right_dist_m_;
+
+                if (!parseDoubleField(fields, 0, encoder_prev_avg_dist_m_, avg_dist) ||
+                    !parseDoubleField(fields, 1, encoder_prev_left_dist_m_, left_dist) ||
+                    !parseDoubleField(fields, 2, encoder_prev_right_dist_m_, right_dist)) {
+                    ROS_WARN_THROTTLE(5.0, "[mega_bridge] invalid encoder ODOM fields");
+                }
+
+                publishEncoderOdomFromDistances(avg_dist, left_dist, right_dist);
             }
 
         } else if (type == "ERR") {
