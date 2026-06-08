@@ -1423,12 +1423,16 @@ private:
     void heartbeatLoop()
     {
         ros::Rate rate(hb_hz_);
+        double last_blade_keepalive_s = 0.0;
         while (ros::ok()) {
             send("HB", {"RPI"});
-            // Keep the commanded blade state alive. The Mega stops the blade
-            // if this process disappears or stops refreshing the command.
-            if (mow_commanded_.load() && !emergency_.load() && mega_connected_.load()) {
+            // Refresh blade ON roughly once per second. The Mega independently
+            // stops it after 1.5 s without confirmation.
+            const double now_s = ros::WallTime::now().toSec();
+            if (mow_commanded_.load() && !emergency_.load() && mega_connected_.load() &&
+                now_s - last_blade_keepalive_s >= 0.75) {
                 send("CMD", {"BLADE", "ON"});
+                last_blade_keepalive_s = now_s;
             }
             rate.sleep();
         }
