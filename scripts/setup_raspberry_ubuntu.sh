@@ -738,7 +738,7 @@ PLATFORM_BLOCK
 # Custom mower hardware defaults — adjust to match your robot
 export OM_ANTENNA_OFFSET_X=${OM_ANTENNA_OFFSET_X:-0.3}
 export OM_ANTENNA_OFFSET_Y=${OM_ANTENNA_OFFSET_Y:-0.0}
-export OM_WHEEL_DISTANCE_M=${OM_WHEEL_DISTANCE_M:-0.325}
+export OM_WHEEL_DISTANCE_M=${OM_WHEEL_DISTANCE_M:-0.35}
 export OM_WHEEL_TICKS_PER_M=${OM_WHEEL_TICKS_PER_M:-1600.0}
 MOWER_ENV
     echo "Created ~/mower_params/default_environment.sh — adjust wheel/antenna values for your hardware."

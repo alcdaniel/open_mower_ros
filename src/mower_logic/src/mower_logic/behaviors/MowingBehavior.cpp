@@ -444,8 +444,10 @@ bool MowingBehavior::execute_mowing_plan() {
     // Execute the path segment and either drop it if we finished it successfully or trim it if we were aborted
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////
     {
-      // enable mower (only when we reach the start not on the way to mowing already)
-      mowerEnabled = true;
+      // Keep blades off until the mowing path is actually active and we have
+      // started consuming path points. This avoids spinning up blades during
+      // immediate controller aborts or path re-acquisition attempts.
+      mowerEnabled = false;
 
       mbf_msgs::ExePathGoal exePathGoal;
       nav_msgs::Path exePath;
@@ -505,9 +507,12 @@ bool MowingBehavior::execute_mowing_plan() {
             if (currentIndex != -1) {
               currentMowingPathIndex = exePathStartIndex + currentIndex;
             }
+            mowerEnabled = (currentIndex > 0);
             ROS_INFO_STREAM_THROTTLE(
                 5, "MowingBehavior: (MOW) Progress: " << currentMowingPathIndex << "/" << path.path.poses.size());
             if (ros::Time::now() - last_checkpoint > ros::Duration(30.0)) checkpoint();
+          } else {
+            mowerEnabled = false;
           }
         } else {
           ROS_INFO_STREAM("MowingBehavior: (MOW)  Got status " << current_status.state_
