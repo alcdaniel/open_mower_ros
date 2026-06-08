@@ -292,7 +292,9 @@ namespace ftc_local_planner
         break;
         case FOLLOWING:
         {
-            double distance = local_control_point.translation().norm();
+            const double dx = current_control_point.translation().x() - current_pose.pose.position.x;
+            const double dy = current_control_point.translation().y() - current_pose.pose.position.y;
+            const double distance = std::hypot(dx, dy);
             // check for crash
             if (distance > config.max_follow_distance)
             {
@@ -311,7 +313,9 @@ namespace ftc_local_planner
         break;
         case WAITING_FOR_GOAL_APPROACH:
         {
-            double distance = local_control_point.translation().norm();
+            const double dx = current_control_point.translation().x() - current_pose.pose.position.x;
+            const double dy = current_control_point.translation().y() - current_pose.pose.position.y;
+            const double distance = std::hypot(dx, dy);
             if (time_in_current_state() > config.goal_timeout)
             {
                 ROS_WARN_STREAM("FTCLocalPlannerROS: Could not reach goal position. config.goal_timeout (" << config.goal_timeout << ") reached - Attempting final rotation anyways.");
@@ -568,6 +572,14 @@ namespace ftc_local_planner
                 }
             }
             cmd_vel.twist.linear.x = lin_speed;
+
+            // Do not keep driving forward while the robot is substantially
+            // misaligned with the path. Rotate/reacquire before advancing.
+            if (std::abs(lat_error) > 0.35 ||
+                std::abs(angle_error) > (60.0 * M_PI / 180.0))
+            {
+                cmd_vel.twist.linear.x = 0.0;
+            }
         }
         else
         {

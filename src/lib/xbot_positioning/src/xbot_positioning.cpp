@@ -156,7 +156,9 @@ void onImu(const sensor_msgs::Imu::ConstPtr &msg) {
     } else {
         xb_absolute_pose_msg.position_accuracy = 999;
     }
-    if ((ros::Time::now() - last_gps_time).toSec() < 10.0) {
+    // Do not present dead reckoning as a recent absolute position for long.
+    // Mowing must stop quickly when RTK Fixed updates disappear.
+    if ((ros::Time::now() - last_gps_time).toSec() < 2.0) {
         xb_absolute_pose_msg.flags |= xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE;
     } else {
         // on GPS timeout, we set accuracy to 0.
