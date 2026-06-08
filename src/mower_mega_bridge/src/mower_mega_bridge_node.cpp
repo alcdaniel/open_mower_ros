@@ -204,6 +204,7 @@ public:
     MegaBridge()
         : seq_(0)
         , emergency_(false)
+        , mow_commanded_(false)
         , mow_enabled_(false)
         , local_avoid_(false)
         , ser_open_(false)
@@ -347,6 +348,7 @@ private:
     // ── Atomic flags (no mutex needed) ────────────────────────────────────────
     std::atomic<uint32_t> seq_;
     std::atomic<bool>     emergency_;
+    std::atomic<bool>     mow_commanded_;
     std::atomic<bool>     mow_enabled_;
     std::atomic<bool>     local_avoid_;
     std::atomic<bool>     ser_open_;
@@ -449,6 +451,12 @@ private:
             if (connected) last_rx_time_ = ros::Time::now();
         }
         mega_connected_ = connected;
+        if (!connected) {
+            // Do not automatically restart the blade after a serial reconnect.
+            // mower_logic will explicitly request it again if mowing is still safe.
+            mow_commanded_ = false;
+            mow_enabled_ = false;
+        }
 
         std_msgs::Bool bm;
         bm.data = connected;
@@ -908,6 +916,28 @@ private:
                 local_avoid_ = false;
             pub_status_.publish(sm);
 
+        } else if (type == "BLADE") {
+            // BLADE,<enabled>,<physically_running>
+            const bool blade_enabled = !fields.empty() && fields[0] == "1";
+            const bool blade_running = fields.size() >= 2 && fields[1] == "1";
+            mow_enabled_ = blade_running;
+
+            mower_msgs::Status sm;
+            {
+                std::lock_guard<std::mutex> lk(state_mutex_);
+                sm.mower_status =
+                    (mega_state_ == "IDLE" || mega_state_ == "PARKED" || mega_state_ == "DOCKED")
+                    ? mower_msgs::Status::MOWER_STATUS_INITIALIZING
+                    : mower_msgs::Status::MOWER_STATUS_OK;
+                sm.mow_enabled = blade_running;
+                sm.is_charging = (charging_ > 0);
+            }
+            pub_status_.publish(sm);
+
+            if (blade_enabled && !blade_running) {
+                ROS_WARN_THROTTLE(2.0, "[mega_bridge] blade enabled but not physically running");
+            }
+
         } else if (type == "EVT") {
             std::string kind = fields.empty() ? "" : fields[0];
             if (kind == "OBSTACLE") {
@@ -1245,6 +1275,11 @@ private:
     void setRosEmergency(bool active, const std::string& reason = "")
     {
         emergency_ = active;
+        if (active) {
+            mow_commanded_ = false;
+            mow_enabled_ = false;
+            send("CMD", {"BLADE", "OFF"});
+        }
         send("CMD", {"ESTOP", active ? "1" : "0"});
         mower_msgs::Emergency em;
         em.active_emergency  = active;
@@ -1346,7 +1381,11 @@ private:
             ROS_WARN_THROTTLE(2, "[mega_bridge] rejecting blade_cmd: Mega not connected");
             return;
         }
-        mow_enabled_ = msg->data;
+        if (msg->data && emergency_.load()) {
+            ROS_WARN_THROTTLE(2, "[mega_bridge] rejecting blade_cmd ON during emergency");
+            return;
+        }
+        mow_commanded_ = msg->data;
         send("CMD", {"BLADE", msg->data ? "ON" : "OFF"});
     }
 
@@ -1359,7 +1398,11 @@ private:
             ROS_WARN_THROTTLE(2, "[mega_bridge] rejecting mow_enabled: Mega not connected");
             return false;
         }
-        mow_enabled_ = req.mow_enabled;
+        if (req.mow_enabled && emergency_.load()) {
+            ROS_WARN_THROTTLE(2, "[mega_bridge] rejecting mow_enabled ON during emergency");
+            return false;
+        }
+        mow_commanded_ = req.mow_enabled;
         send("CMD", {"BLADE", req.mow_enabled ? "ON" : "OFF"});
         return true;
     }
@@ -1384,7 +1427,7 @@ private:
             send("HB", {"RPI"});
             // Keep the commanded blade state alive. The Mega stops the blade
             // if this process disappears or stops refreshing the command.
-            if (mow_enabled_.load()) {
+            if (mow_commanded_.load() && !emergency_.load() && mega_connected_.load()) {
                 send("CMD", {"BLADE", "ON"});
             }
             rate.sleep();

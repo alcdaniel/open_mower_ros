@@ -27,6 +27,7 @@ ntrip_client:
 
 mower_logic:
   automatic_mode: 0
+  enable_mower: true
   docking_approach_distance: 1.5
   docking_extra_time: 0
   docking_retry_count: 4
