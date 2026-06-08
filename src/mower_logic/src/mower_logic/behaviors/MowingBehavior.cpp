@@ -36,6 +36,7 @@ extern actionlib::SimpleActionClient<mbf_msgs::MoveBaseAction>* mbfClient;
 extern actionlib::SimpleActionClient<mbf_msgs::ExePathAction>* mbfClientExePath;
 extern mower_logic::MowerLogicConfig getConfig();
 extern void setConfig(mower_logic::MowerLogicConfig);
+extern xbot_msgs::AbsolutePose getPose();
 
 extern void registerActions(std::string prefix, const std::vector<xbot_msgs::ActionInfo>& actions);
 
@@ -265,6 +266,7 @@ void printNavState(int state) {
 }
 
 bool MowingBehavior::execute_mowing_plan() {
+  constexpr double kFirstPointAcceptanceDistanceM = 0.5;
   int first_point_attempt_counter = 0;
   int first_point_trim_counter = 0;
   ros::Time paused_time(0.0);
@@ -394,7 +396,25 @@ bool MowingBehavior::execute_mowing_plan() {
       }
 
       first_point_attempt_counter++;
-      if (current_status.state_ != actionlib::SimpleClientGoalState::SUCCEEDED) {
+
+      bool first_point_reached = (current_status.state_ == actionlib::SimpleClientGoalState::SUCCEEDED);
+      if (first_point_reached) {
+        const xbot_msgs::AbsolutePose robot_pose = getPose();
+        const geometry_msgs::Point& target_position = path.path.poses[currentMowingPathIndex].pose.position;
+        const geometry_msgs::Point& current_position = robot_pose.pose.pose.position;
+        const double dx = target_position.x - current_position.x;
+        const double dy = target_position.y - current_position.y;
+        const double first_point_distance = std::hypot(dx, dy);
+
+        if (first_point_distance > kFirstPointAcceptanceDistanceM) {
+          first_point_reached = false;
+          ROS_WARN_STREAM("MowingBehavior: (FIRST POINT) Planner reported success, but robot is still "
+                          << first_point_distance
+                          << " m away from the start point. Treating it as a failed approach.");
+        }
+      }
+
+      if (!first_point_reached) {
         // we cannot reach the start point
         ROS_ERROR_STREAM("MowingBehavior: (FIRST POINT) - Could not reach goal (first point). Planner Status was: "
                          << current_status.state_);
