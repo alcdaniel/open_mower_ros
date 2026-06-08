@@ -602,6 +602,37 @@ namespace ftc_local_planner
             }
 
             cmd_vel.twist.angular.z = ang_speed;
+
+            // This mower loses the path when it keeps too much forward speed
+            // while still asking for strong heading/lateral corrections.
+            // Reduce linear speed as curvature/error rises so the robot
+            // re-acquires the line before it trips max_follow_distance.
+            const double abs_angle_error = std::abs(angle_error);
+            const double abs_lat_error = std::abs(lat_error);
+            const double turn_ratio =
+                (config.max_cmd_vel_ang > 1e-6)
+                    ? std::min(1.0, std::abs(cmd_vel.twist.angular.z) / config.max_cmd_vel_ang)
+                    : 0.0;
+
+            double linear_scale = 1.0 - (0.55 * turn_ratio);
+            if (abs_angle_error > (25.0 * M_PI / 180.0) || abs_lat_error > 0.15)
+            {
+                linear_scale = std::min(linear_scale, 0.55);
+            }
+            if (abs_angle_error > (40.0 * M_PI / 180.0) || abs_lat_error > 0.22)
+            {
+                linear_scale = std::min(linear_scale, 0.35);
+            }
+            if (abs_angle_error > (55.0 * M_PI / 180.0) || abs_lat_error > 0.30)
+            {
+                linear_scale = 0.0;
+            }
+            if (linear_scale < 0.0)
+            {
+                linear_scale = 0.0;
+            }
+
+            cmd_vel.twist.linear.x *= linear_scale;
         }
         else
         {

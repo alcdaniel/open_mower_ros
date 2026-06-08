@@ -1,5 +1,5 @@
 FTCPlanner:
-  acceleration: 0.1
+  acceleration: 0.08
   check_obstacles: false
   oscillation_recovery: false
   debug_pid: true
@@ -17,14 +17,14 @@ FTCPlanner:
   kp_ang: 3.0
   kp_lat: 8.0
   kp_lon: 4.0
-  max_cmd_vel_ang: 0.8
-  max_cmd_vel_speed: 0.35
+  max_cmd_vel_ang: 0.6
+  max_cmd_vel_speed: 0.26
   max_follow_distance: 0.6
   max_goal_angle_error: 20.0
   max_goal_distance_error: 0.2
   restore_defaults: false
-  speed_angular: 45.0
-  speed_fast: 0.35
+  speed_angular: 35.0
+  speed_fast: 0.26
   speed_fast_threshold: 1.0
   speed_fast_threshold_angle: 20.0
-  speed_slow: 0.18
+  speed_slow: 0.12
