@@ -14,7 +14,7 @@ def main():
         description='Test UART loopback (TX and RX connected together)'
     )
     parser.add_argument('--port', default='/dev/ttyAMA0', help='Serial port')
-    parser.add_argument('--baud', type=int, default=57600, help='Baud rate')
+    parser.add_argument('--baud', type=int, default=115200, help='Baud rate')
     parser.add_argument('--timeout', type=float, default=1.0, help='Read timeout')
     args = parser.parse_args()
 

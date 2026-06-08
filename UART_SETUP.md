@@ -91,7 +91,7 @@ dtoverlay=disable-bt
 
 #### 1. Interactive Test
 ```bash
-python3 scripts/rpi_uart_echo_test.py --port /dev/ttyAMA0 --baud 57600
+python3 scripts/rpi_uart_echo_test.py --port /dev/ttyAMA0 --baud 115200
 ```
 
 Sends test messages and displays received responses. Use this for debugging.

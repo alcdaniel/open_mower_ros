@@ -674,9 +674,9 @@ setup_mower_config() {
     echo 'export OM_GPS_PROTOCOL=UBX' >> "${config}"
   fi
   if grep -qE '^[#[:space:]]*export OM_MEGA_BAUD=' "${config}"; then
-    sed -i -E 's|^[#[:space:]]*export OM_MEGA_BAUD=.*|export OM_MEGA_BAUD=57600|' "${config}"
+    sed -i -E 's|^[#[:space:]]*export OM_MEGA_BAUD=.*|export OM_MEGA_BAUD=115200|' "${config}"
   else
-    echo 'export OM_MEGA_BAUD=57600' >> "${config}"
+    echo 'export OM_MEGA_BAUD=115200' >> "${config}"
   fi
   if grep -qE '^[#[:space:]]*export OM_GPS_PORT=' "${config}"; then
     sed -i -E 's|^[#[:space:]]*export OM_GPS_PORT=.*|export OM_GPS_PORT="/dev/serial/by-id/usb-u-blox_AG_-_www.u-blox.com_u-blox_GNSS_receiver-if00"|' "${config}"

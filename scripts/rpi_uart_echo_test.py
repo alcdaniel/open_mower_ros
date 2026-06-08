@@ -3,7 +3,7 @@
 Prueba mínima UART Raspberry <-> Mega (modo interactivo)
 
 Uso:
-  python3 scripts/rpi_uart_echo_test.py --port /dev/ttyAMA0 --baud 57600
+  python3 scripts/rpi_uart_echo_test.py --port /dev/ttyAMA0 --baud 115200
 
 Comandos en consola:
   - escribe texto y Enter -> se envía al Mega
@@ -38,7 +38,7 @@ def reader_loop(ser: serial.Serial, out_q: "queue.Queue[str]", stop_evt: threadi
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", default="/dev/ttyAMA0")
-    parser.add_argument("--baud", type=int, default=57600)
+    parser.add_argument("--baud", type=int, default=115200)
     parser.add_argument("--timeout", type=float, default=0.2)
     args = parser.parse_args()
 
@@ -104,4 +104,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

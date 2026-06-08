@@ -31,7 +31,7 @@
             <node pkg="mower_mega_bridge" type="mower_mega_bridge_node" name="ll"
                   output="screen" respawn="true" respawn_delay="10">
                 <param name="port"             value="$(optenv OM_MEGA_PORT /dev/ttyAMA0)"/>
-                <param name="baud"             value="$(optenv OM_MEGA_BAUD 57600)"/>
+                <param name="baud"             value="$(optenv OM_MEGA_BAUD 115200)"/>
                 <param name="wheel_distance_m" value="$(optenv OM_WHEEL_DISTANCE_M 0.35)"/>
                 <param name="max_pwm"          value="$(optenv OM_MAX_PWM 255)"/>
                 <param name="heartbeat_hz"     value="$(optenv OM_HB_HZ 3.0)"/>

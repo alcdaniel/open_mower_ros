@@ -8,7 +8,7 @@ import time
 import sys
 
 PORT = "/dev/ttyAMA0"  # or /dev/ttyS0 on some Pi models
-BAUD = 57600
+BAUD = 115200
 TIMEOUT = 2.0
 
 def xor_checksum(body):
@@ -69,7 +69,7 @@ while time.time() - start < 10:
 if not got_ialive:
     print("\n✗ NO IALIVE received. Mega not responding:")
     print("  - Check Arduino.ino has #define RPI_MODE")
-    print("  - Check Serial2.begin(57600) in setup()")
+    print("  - Check Serial2.begin(115200) in setup()")
     print("  - Check RPI_Link_Update() called in loop()")
     print("  - Check physical TX/RX wires connected properly (TX2→RX0 cross)")
     ser.close()

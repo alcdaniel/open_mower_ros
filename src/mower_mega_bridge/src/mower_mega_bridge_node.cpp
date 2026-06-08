@@ -43,7 +43,7 @@
  *
  * Parameters (private ~):
  *   port             /dev/ttyAMA2
- *   baud             57600
+ *   baud             115200
  *   wheel_distance_m 0.325
  *   max_pwm          255
  *   heartbeat_hz     3.0
@@ -251,7 +251,7 @@ public:
         ros::NodeHandle pnh("~");
 
         port_       = pnh.param<std::string>("port", "/dev/ttyAMA0");
-        baud_       = pnh.param<int>("baud", 57600);
+        baud_       = pnh.param<int>("baud", 115200);
         wheel_dist_ = pnh.param<double>("wheel_distance_m", 0.40);
         max_pwm_    = pnh.param<int>("max_pwm", 255);
         hb_hz_      = pnh.param<double>("heartbeat_hz", 3.0);

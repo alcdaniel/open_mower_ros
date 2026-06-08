@@ -94,7 +94,7 @@ if [[ $fail_count -eq 0 ]]; then
     echo "      Connect Mega RX to RPi GPIO14 (TX)"
     echo "      Connect GND"
     echo ""
-    echo "Test with: python3 scripts/rpi_uart_echo_test.py --port /dev/ttyAMA0 --baud 57600"
+    echo "Test with: python3 scripts/rpi_uart_echo_test.py --port /dev/ttyAMA0 --baud 115200"
     exit 0
 else
     echo -e "${RED}✗ $fail_count check(s) failed${NC}"

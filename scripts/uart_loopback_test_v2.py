@@ -3,9 +3,9 @@
 Robust UART loopback test for Raspberry Pi header UART (GPIO14/GPIO15).
 
 Usage examples:
-  python3 scripts/uart_loopback_test_v2.py --baud 57600
-  python3 scripts/uart_loopback_test_v2.py --port /dev/serial0 --baud 57600
-  python3 scripts/uart_loopback_test_v2.py --ports /dev/serial0,/dev/ttyAMA0,/dev/ttyS0 --baud 57600
+  python3 scripts/uart_loopback_test_v2.py --baud 115200
+  python3 scripts/uart_loopback_test_v2.py --port /dev/serial0 --baud 115200
+  python3 scripts/uart_loopback_test_v2.py --ports /dev/serial0,/dev/ttyAMA0,/dev/ttyS0 --baud 115200
 
 Physical setup for loopback:
   - Disconnect Mega.
@@ -131,7 +131,7 @@ def main() -> int:
         default=None,
         help="CSV list of ports to test, e.g. /dev/serial0,/dev/ttyAMA0,/dev/ttyS0",
     )
-    parser.add_argument("--baud", type=int, default=57600, help="Baudrate (default: 57600)")
+    parser.add_argument("--baud", type=int, default=115200, help="Baudrate (default: 115200)")
     parser.add_argument("--timeout", type=float, default=1.0, help="Serial timeout in seconds")
     parser.add_argument(
         "--rx-timeout",
