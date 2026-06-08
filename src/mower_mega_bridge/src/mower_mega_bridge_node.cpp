@@ -1382,6 +1382,11 @@ private:
         ros::Rate rate(hb_hz_);
         while (ros::ok()) {
             send("HB", {"RPI"});
+            // Keep the commanded blade state alive. The Mega stops the blade
+            // if this process disappears or stops refreshing the command.
+            if (mow_enabled_.load()) {
+                send("CMD", {"BLADE", "ON"});
+            }
             rate.sleep();
         }
     }
