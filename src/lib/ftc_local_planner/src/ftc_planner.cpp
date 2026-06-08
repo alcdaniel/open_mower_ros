@@ -3,6 +3,7 @@
 
 #include <pluginlib/class_list_macros.h>
 #include "mbf_msgs/ExePathAction.h"
+#include <tf2/utils.h>
 
 PLUGINLIB_EXPORT_CLASS(ftc_local_planner::FTCPlanner, mbf_costmap_core::CostmapController)
 
@@ -29,9 +30,6 @@ namespace ftc_local_planner
         global_plan_pub = private_nh.advertise<nav_msgs::Path>("global_plan", 1, true);
         obstacle_marker_pub = private_nh.advertise<visualization_msgs::Marker>("costmap_marker", 10);
 
-        imu_topic_ = private_nh.param<std::string>("imu_topic", "/mega/imu_gyro");
-        imu_sub = global_nh.subscribe(imu_topic_, 10, &FTCPlanner::imuCallback, this);
-
         costmap = costmap_ros;
         costmap_map_ = costmap->getCostmap();
         tf_buffer = tf;
@@ -53,7 +51,7 @@ namespace ftc_local_planner
         // Recovery behavior initialization
         failure_detector_.setBufferLength(std::round(config.oscillation_recovery_min_duration * 10));
 
-        ROS_INFO_STREAM("FTCLocalPlannerROS: Version 2 Init. IMU topic=" << imu_topic_);
+        ROS_INFO("FTCLocalPlannerROS: Version 2 Init.");
     }
 
     void FTCPlanner::reconfigureCB(FTCPlannerConfig &c, uint32_t level)
@@ -433,13 +431,15 @@ namespace ftc_local_planner
         Eigen::Vector3d goal_pos = current_control_point.translation();
         Eigen::Vector3d diff = goal_pos - robot_pos;
 
+        // Use the filtered pose yaw from the EKF, not the raw compass/IMU topic.
+        current_heading_rad = tf2::getYaw(current_pose.pose.orientation);
+
         // Rotate diff to robot frame using current heading
         double cos_h = std::cos(-current_heading_rad);
         double sin_h = std::sin(-current_heading_rad);
         lon_error = diff.x() * cos_h - diff.y() * sin_h;
         lat_error = diff.x() * sin_h + diff.y() * cos_h;
 
-        // Use IMU heading directly (faster, ~40ms vs TF latency ~100-200ms)
         Eigen::Quaternion<double> goal_quat(current_control_point.linear());
         double goal_yaw = std::atan2(2.0 * (goal_quat.w() * goal_quat.z() + goal_quat.x() * goal_quat.y()),
                                       1.0 - 2.0 * (goal_quat.y() * goal_quat.y() + goal_quat.z() * goal_quat.z()));
@@ -771,19 +771,4 @@ namespace ftc_local_planner
         }
     }
 
-    void FTCPlanner::imuCallback(const sensor_msgs::Imu::ConstPtr& msg)
-    {
-        // Extract yaw from quaternion: w, x, y, z
-        double w = msg->orientation.w;
-        double x = msg->orientation.x;
-        double y = msg->orientation.y;
-        double z = msg->orientation.z;
-
-        // Compute yaw angle from quaternion
-        current_heading_rad = std::atan2(2.0 * (w * z + x * y),
-                                         1.0 - 2.0 * (y * y + z * z));
-
-        ROS_INFO_STREAM_THROTTLE(1.0, "[FTC] imuCallback: heading_rad=" << current_heading_rad
-            << " (deg=" << (current_heading_rad * 180.0 / M_PI) << ")");
-    }
 }

@@ -1,5 +1,4 @@
 DockingFTCPlanner:
-  imu_topic: /mega/imu_gyro
   acceleration: 1.0
   check_obstacles: false
   oscillation_recovery: false
