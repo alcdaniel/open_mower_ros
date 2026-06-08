@@ -20,6 +20,10 @@
 #include <nav_msgs/Path.h>
 #include <rosbag/bag.h>
 #include <rosbag/view.h>
+#include <sstream>
+#include <std_msgs/String.h>
+#include <tf2/LinearMath/Matrix3x3.h>
+#include <tf2/LinearMath/Quaternion.h>
 
 #include "mower_logic/CheckPoint.h"
 #include "mower_map/ClearNavPointSrv.h"
@@ -37,10 +41,81 @@ extern actionlib::SimpleActionClient<mbf_msgs::ExePathAction>* mbfClientExePath;
 extern mower_logic::MowerLogicConfig getConfig();
 extern void setConfig(mower_logic::MowerLogicConfig);
 extern xbot_msgs::AbsolutePose getPose();
+extern ros::Publisher mowing_debug_first_point_pub;
+extern ros::Publisher mowing_debug_remaining_path_pub;
+extern ros::Publisher mowing_debug_current_pose_pub;
+extern ros::Publisher mowing_debug_phase_pub;
 
 extern void registerActions(std::string prefix, const std::vector<xbot_msgs::ActionInfo>& actions);
 
 MowingBehavior MowingBehavior::INSTANCE;
+
+namespace {
+
+geometry_msgs::PoseStamped makePoseStamped(const std_msgs::Header& header, const geometry_msgs::Pose& pose) {
+  geometry_msgs::PoseStamped pose_stamped;
+  pose_stamped.header = header;
+  pose_stamped.pose = pose;
+  return pose_stamped;
+}
+
+double yawFromPose(const geometry_msgs::Pose& pose) {
+  tf2::Quaternion quat;
+  quat.setValue(pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w);
+  tf2::Matrix3x3 m(quat);
+  double roll = 0.0, pitch = 0.0, yaw = 0.0;
+  m.getRPY(roll, pitch, yaw);
+  return yaw;
+}
+
+void publishMowingDebugPhase(const std::string& phase,
+                             const xbot_msgs::AbsolutePose& robot_pose,
+                             const geometry_msgs::PoseStamped& target_pose,
+                             int path_index,
+                             int point_index,
+                             double distance_m,
+                             int planner_state) {
+  std_msgs::String msg;
+  std::ostringstream ss;
+  ss << phase << "|path=" << path_index << "|point=" << point_index << "|dist_m=" << distance_m
+     << "|planner_state=" << planner_state << "|robot_xy=(" << robot_pose.pose.pose.position.x << ","
+     << robot_pose.pose.pose.position.y << ")|robot_yaw=" << yawFromPose(robot_pose.pose.pose)
+     << "|target_xy=(" << target_pose.pose.position.x << "," << target_pose.pose.position.y << ")|target_yaw="
+     << yawFromPose(target_pose.pose);
+  msg.data = ss.str();
+  mowing_debug_phase_pub.publish(msg);
+}
+
+void publishCurrentPoseDebug(const xbot_msgs::AbsolutePose& robot_pose) {
+  nav_msgs::Path current_pose_path;
+  current_pose_path.header = robot_pose.header;
+  current_pose_path.poses.push_back(makePoseStamped(robot_pose.header, robot_pose.pose.pose));
+  mowing_debug_current_pose_pub.publish(current_pose_path);
+}
+
+void publishFirstPointDebug(const xbot_msgs::AbsolutePose& robot_pose,
+                            const geometry_msgs::PoseStamped& target_pose) {
+  nav_msgs::Path debug_path;
+  debug_path.header = target_pose.header;
+  if (debug_path.header.frame_id.empty()) debug_path.header.frame_id = robot_pose.header.frame_id;
+  if (debug_path.header.stamp.isZero()) debug_path.header.stamp = ros::Time::now();
+  debug_path.poses.push_back(makePoseStamped(debug_path.header, robot_pose.pose.pose));
+  debug_path.poses.push_back(target_pose);
+  mowing_debug_first_point_pub.publish(debug_path);
+}
+
+void publishRemainingPathDebug(const nav_msgs::Path& path, int start_index) {
+  nav_msgs::Path debug_path;
+  debug_path.header = path.header;
+  if (debug_path.header.stamp.isZero()) debug_path.header.stamp = ros::Time::now();
+  if (start_index < 0) start_index = 0;
+  if (start_index < static_cast<int>(path.poses.size())) {
+    debug_path.poses.insert(debug_path.poses.end(), path.poses.begin() + start_index, path.poses.end());
+  }
+  mowing_debug_remaining_path_pub.publish(debug_path);
+}
+
+}  // namespace
 
 std::string MowingBehavior::state_name() {
   if (paused) {
@@ -337,6 +412,7 @@ bool MowingBehavior::execute_mowing_plan() {
     /////////////////////////////////////////////////////////////////////////////////////////////////////////
     {
       ROS_INFO_STREAM("MowingBehavior: (FIRST POINT)  Moving to path segment starting point");
+      const geometry_msgs::PoseStamped first_point_target = path.path.poses[currentMowingPathIndex];
       if (path.is_outline && getConfig().add_fake_obstacle) {
         mower_map::SetNavPointSrv set_nav_point_srv;
         set_nav_point_srv.request.nav_pose = path.path.poses[currentMowingPathIndex].pose;
@@ -355,6 +431,22 @@ bool MowingBehavior::execute_mowing_plan() {
       // wait for path execution to finish
       while (ros::ok()) {
         current_status = mbfClient->getState();
+        const xbot_msgs::AbsolutePose robot_pose = getPose();
+        const double dx_debug = first_point_target.pose.position.x - robot_pose.pose.pose.position.x;
+        const double dy_debug = first_point_target.pose.position.y - robot_pose.pose.pose.position.y;
+        const double first_point_distance_debug = std::hypot(dx_debug, dy_debug);
+        publishCurrentPoseDebug(robot_pose);
+        publishFirstPointDebug(robot_pose, first_point_target);
+        publishMowingDebugPhase("FIRST_POINT", robot_pose, first_point_target, currentMowingPath, currentMowingPathIndex,
+                                first_point_distance_debug, current_status.state_);
+        ROS_INFO_STREAM_THROTTLE(
+            1.0, "MowingBehavior: (FIRST POINT) state=" << current_status.state_ << " path=" << currentMowingPath
+                                                        << " index=" << currentMowingPathIndex
+                                                        << " dist_to_start_m=" << first_point_distance_debug
+                                                        << " robot_xy=(" << robot_pose.pose.pose.position.x << ","
+                                                        << robot_pose.pose.pose.position.y << ") target_xy=("
+                                                        << first_point_target.pose.position.x << ","
+                                                        << first_point_target.pose.position.y << ")");
         if (current_status.state_ == actionlib::SimpleClientGoalState::ACTIVE ||
             current_status.state_ == actionlib::SimpleClientGoalState::PENDING) {
           // path is being executed, everything seems fine.
@@ -491,6 +583,7 @@ bool MowingBehavior::execute_mowing_plan() {
       // wait for path execution to finish
       while (ros::ok()) {
         current_status = mbfClientExePath->getState();
+        publishRemainingPathDebug(path.path, currentMowingPathIndex);
         if (current_status.state_ == actionlib::SimpleClientGoalState::ACTIVE ||
             current_status.state_ == actionlib::SimpleClientGoalState::PENDING) {
           // path is being executed, everything seems fine.
@@ -528,6 +621,24 @@ bool MowingBehavior::execute_mowing_plan() {
               currentMowingPathIndex = exePathStartIndex + currentIndex;
             }
             mowerEnabled = (currentIndex > 0);
+            if (currentMowingPathIndex < static_cast<int>(path.path.poses.size())) {
+              const xbot_msgs::AbsolutePose robot_pose = getPose();
+              const geometry_msgs::PoseStamped current_target = path.path.poses[currentMowingPathIndex];
+              const double dx_debug = current_target.pose.position.x - robot_pose.pose.pose.position.x;
+              const double dy_debug = current_target.pose.position.y - robot_pose.pose.pose.position.y;
+              const double mow_distance_debug = std::hypot(dx_debug, dy_debug);
+              publishCurrentPoseDebug(robot_pose);
+              publishMowingDebugPhase("MOW", robot_pose, current_target, currentMowingPath, currentMowingPathIndex,
+                                      mow_distance_debug, current_status.state_);
+              ROS_INFO_STREAM_THROTTLE(
+                  1.0, "MowingBehavior: (MOW) state=" << current_status.state_ << " path=" << currentMowingPath
+                                                     << " index=" << currentMowingPathIndex
+                                                     << " dist_to_target_m=" << mow_distance_debug
+                                                     << " robot_xy=(" << robot_pose.pose.pose.position.x << ","
+                                                     << robot_pose.pose.pose.position.y << ") target_xy=("
+                                                     << current_target.pose.position.x << ","
+                                                     << current_target.pose.position.y << ")");
+            }
             ROS_INFO_STREAM_THROTTLE(
                 5, "MowingBehavior: (MOW) Progress: " << currentMowingPathIndex << "/" << path.path.poses.size());
             if (ros::Time::now() - last_checkpoint > ros::Duration(30.0)) checkpoint();

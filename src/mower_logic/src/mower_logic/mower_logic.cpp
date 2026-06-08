@@ -17,6 +17,7 @@
 
 #include <actionlib/client/simple_action_client.h>
 #include <dynamic_reconfigure/server.h>
+#include <nav_msgs/Path.h>
 #include <mower_logic/PowerConfig.h>
 #include <mower_msgs/ESCStatus.h>
 #include <mower_msgs/Emergency.h>
@@ -66,6 +67,8 @@ actionlib::SimpleActionClient<mbf_msgs::MoveBaseAction>* mbfClient;
 actionlib::SimpleActionClient<mbf_msgs::ExePathAction>* mbfClientExePath;
 
 ros::Publisher cmd_vel_pub, high_level_state_publisher;
+ros::Publisher mowing_debug_first_point_pub, mowing_debug_remaining_path_pub, mowing_debug_current_pose_pub,
+    mowing_debug_phase_pub;
 mower_logic::MowerLogicConfig last_config;
 ll::PowerConfig last_power_config;
 
@@ -698,6 +701,10 @@ int main(int argc, char** argv) {
   cmd_vel_pub = n->advertise<geometry_msgs::Twist>("/logic_vel", 1);
 
   high_level_state_publisher = n->advertise<mower_msgs::HighLevelStatus>("mower_logic/current_state", 100, true);
+  mowing_debug_first_point_pub = n->advertise<nav_msgs::Path>("mower_logic/debug/first_point_path", 1, true);
+  mowing_debug_remaining_path_pub = n->advertise<nav_msgs::Path>("mower_logic/debug/mow_path_remaining", 1, true);
+  mowing_debug_current_pose_pub = n->advertise<nav_msgs::Path>("mower_logic/debug/current_pose", 1, true);
+  mowing_debug_phase_pub = n->advertise<std_msgs::String>("mower_logic/debug/phase", 10, true);
 
   pathClient = n->serviceClient<slic3r_coverage_planner::PlanPath>("slic3r_coverage_planner/plan_path");
   mapClient = n->serviceClient<mower_map::GetMowingAreaSrv>("mower_map_service/get_mowing_area");
