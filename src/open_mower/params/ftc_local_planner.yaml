@@ -5,8 +5,8 @@ FTCPlanner:
   debug_pid: true
   forward_only: true
   goal_timeout: 20.0
-  kd_ang: 0.5
-  kd_lat: 1.23
+  kd_ang: 0.0
+  kd_lat: 0.2
   kd_lon: 0.0
   ki_ang: 0.0
   ki_ang_max: 62.0
@@ -15,9 +15,9 @@ FTCPlanner:
   ki_lon: 0.0
   ki_lon_max: 10.0
   kp_ang: 3.0
-  kp_lat: 25.0
+  kp_lat: 8.0
   kp_lon: 4.0
-  max_cmd_vel_ang: 3.1
+  max_cmd_vel_ang: 0.8
   max_cmd_vel_speed: 0.45
   max_follow_distance: 1.0
   max_goal_angle_error: 20.0
