@@ -59,10 +59,11 @@ namespace ftc_local_planner
         ros::Publisher progress_pub;
         ros::Publisher obstacle_marker_pub;
         ros::Subscriber imu_sub;
+        std::string imu_topic_;
 
         FTCPlannerConfig config;
 
-        double current_heading_rad = 0.0;  // Current yaw from mega/imu, updated in real-time
+        double current_heading_rad = 0.0;  // Current yaw from the configured IMU topic
         void imuCallback(const sensor_msgs::Imu::ConstPtr& msg);
 
         geometry_msgs::PoseStamped current_pose;  // Current robot pose (map frame)

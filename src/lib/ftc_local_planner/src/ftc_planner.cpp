@@ -29,7 +29,8 @@ namespace ftc_local_planner
         global_plan_pub = private_nh.advertise<nav_msgs::Path>("global_plan", 1, true);
         obstacle_marker_pub = private_nh.advertise<visualization_msgs::Marker>("costmap_marker", 10);
 
-        imu_sub = global_nh.subscribe("mega/imu", 10, &FTCPlanner::imuCallback, this);
+        imu_topic_ = private_nh.param<std::string>("imu_topic", "/mega/imu_gyro");
+        imu_sub = global_nh.subscribe(imu_topic_, 10, &FTCPlanner::imuCallback, this);
 
         costmap = costmap_ros;
         costmap_map_ = costmap->getCostmap();
@@ -52,7 +53,7 @@ namespace ftc_local_planner
         // Recovery behavior initialization
         failure_detector_.setBufferLength(std::round(config.oscillation_recovery_min_duration * 10));
 
-        ROS_INFO("FTCLocalPlannerROS: Version 2 Init.");
+        ROS_INFO_STREAM("FTCLocalPlannerROS: Version 2 Init. IMU topic=" << imu_topic_);
     }
 
     void FTCPlanner::reconfigureCB(FTCPlannerConfig &c, uint32_t level)
