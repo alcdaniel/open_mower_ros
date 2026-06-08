@@ -72,6 +72,34 @@ namespace ftc_local_planner
 
     bool FTCPlanner::setPlan(const std::vector<geometry_msgs::PoseStamped> &plan)
     {
+        if (plan.empty())
+        {
+            ROS_WARN_STREAM("FTCLocalPlannerROS: Received empty global plan.");
+            return false;
+        }
+
+        bool same_finished_goal = false;
+        if (current_state == FINISHED && !is_crashed && !global_plan.empty())
+        {
+            const geometry_msgs::Pose& previous_goal = global_plan.back().pose;
+            const geometry_msgs::Pose& incoming_goal = plan.back().pose;
+            const double dx = incoming_goal.position.x - previous_goal.position.x;
+            const double dy = incoming_goal.position.y - previous_goal.position.y;
+
+            // Global replanning can regenerate a different terminal orientation
+            // for the same reached position. Keep FINISHED latched so MBF can
+            // complete the current action instead of restarting PRE_ROTATE.
+            same_finished_goal = std::hypot(dx, dy) < 0.10;
+        }
+
+        if (same_finished_goal)
+        {
+            ROS_INFO_STREAM_THROTTLE(
+                2.0,
+                "FTCLocalPlannerROS: Ignoring replan for already reached goal.");
+            return true;
+        }
+
         const bool reset_state = (current_state == FINISHED) || global_plan.empty();
 
         if (reset_state)
