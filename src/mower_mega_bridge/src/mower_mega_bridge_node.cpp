@@ -335,6 +335,12 @@ public:
     void spin() { ros::spin(); }
 
 private:
+    struct TelemetryRateStats {
+        ros::Time window_start;
+        ros::Time last_rx;
+        uint32_t window_count = 0;
+    };
+
     // ── Parameters ────────────────────────────────────────────────────────────
     std::string port_;
     int         baud_;
@@ -382,6 +388,10 @@ private:
     double      encoder_odom_x_m_;
     double      encoder_odom_y_m_;
     double      encoder_odom_theta_rad_;
+    TelemetryRateStats enc_rate_stats_;
+    TelemetryRateStats odom_rate_stats_;
+    TelemetryRateStats gyro_rate_stats_;
+    TelemetryRateStats compass_rate_stats_;
 
     // ── Serial (write path guarded by write_mutex_) ───────────────────────────
     serial::Serial ser_;
@@ -659,6 +669,68 @@ private:
         pub_odom_.publish(odom);
     }
 
+    void markTelemetryRate(TelemetryRateStats& stats, const ros::Time& now)
+    {
+        if (stats.window_start.isZero()) {
+            stats.window_start = now;
+        }
+        stats.last_rx = now;
+        ++stats.window_count;
+    }
+
+    static const char* telemetryHealthLabel(double hz, double min_hz, double age_ms, double stale_ms)
+    {
+        if (age_ms > stale_ms) return "STALE";
+        if (hz < min_hz) return "LOW";
+        return "OK";
+    }
+
+    void logTelemetryRates()
+    {
+        const ros::Time now = ros::Time::now();
+
+        auto snapshot = [&](TelemetryRateStats& stats, double& hz, double& age_ms) {
+            if (stats.window_start.isZero()) {
+                hz = 0.0;
+                age_ms = -1.0;
+                return;
+            }
+            const double window_dt = std::max(1e-3, (now - stats.window_start).toSec());
+            hz = static_cast<double>(stats.window_count) / window_dt;
+            age_ms = stats.last_rx.isZero() ? -1.0 : (now - stats.last_rx).toSec() * 1000.0;
+            stats.window_start = now;
+            stats.window_count = 0;
+        };
+
+        double enc_hz = 0.0, enc_age_ms = -1.0;
+        double odom_hz = 0.0, odom_age_ms = -1.0;
+        double gyro_hz = 0.0, gyro_age_ms = -1.0;
+        double compass_hz = 0.0, compass_age_ms = -1.0;
+        {
+            std::lock_guard<std::mutex> lk(state_mutex_);
+            snapshot(enc_rate_stats_, enc_hz, enc_age_ms);
+            snapshot(odom_rate_stats_, odom_hz, odom_age_ms);
+            snapshot(gyro_rate_stats_, gyro_hz, gyro_age_ms);
+            snapshot(compass_rate_stats_, compass_hz, compass_age_ms);
+        }
+
+        constexpr double kExpectedHighTelemHz = 25.0;
+        constexpr double kMinimumUsefulHz = 15.0;
+        constexpr double kStaleMs = 250.0;
+
+        ROS_INFO(
+            "[mega_bridge][RX_RATE] ENC %.1f Hz age=%.0f ms [%s] | "
+            "ODOM %.1f Hz age=%.0f ms [%s] | "
+            "GYRO %.1f Hz age=%.0f ms [%s] | "
+            "COMPASS %.1f Hz age=%.0f ms [%s] | "
+            "target_high=%.1f Hz min_useful=%.1f Hz",
+            enc_hz, enc_age_ms, telemetryHealthLabel(enc_hz, kMinimumUsefulHz, enc_age_ms, kStaleMs),
+            odom_hz, odom_age_ms, telemetryHealthLabel(odom_hz, kMinimumUsefulHz, odom_age_ms, kStaleMs),
+            gyro_hz, gyro_age_ms, telemetryHealthLabel(gyro_hz, kMinimumUsefulHz, gyro_age_ms, kStaleMs),
+            compass_hz, compass_age_ms, telemetryHealthLabel(compass_hz, kMinimumUsefulHz, compass_age_ms, kStaleMs),
+            kExpectedHighTelemHz, kMinimumUsefulHz);
+    }
+
     void cbStatusTimer(const ros::TimerEvent&)
     {
         if (ser_open_.load()) {
@@ -684,6 +756,7 @@ private:
             std_msgs::Bool bm;
             bm.data = true;
             pub_connected_.publish(bm);
+            logTelemetryRates();
         }
     }
 
@@ -1054,7 +1127,11 @@ private:
                                       fields[0].c_str());
                 }
             }
-            { std::lock_guard<std::mutex> lk(state_mutex_); compass_deg_ = deg; }
+            {
+                std::lock_guard<std::mutex> lk(state_mutex_);
+                compass_deg_ = deg;
+                markTelemetryRate(compass_rate_stats_, ros::Time::now());
+            }
             // Publish as IMU (yaw only) — robot_localization / EKF can fuse this.
             sensor_msgs::Imu imu;
             imu.header.stamp    = ros::Time::now();
@@ -1094,6 +1171,7 @@ private:
                     gyro_x_raw_ = gx;
                     gyro_y_raw_ = gy;
                     gyro_z_raw_ = gz;
+                    markTelemetryRate(gyro_rate_stats_, ros::Time::now());
                 }
                 constexpr double kPi = 3.14159265358979323846;
                 const double r = roll * kPi / 180.0;
@@ -1197,6 +1275,7 @@ private:
                     encoder_avg_speed_ms_ = avg;
                     encoder_speed_diff_ms_ = diff;
                     encoder_data_valid_    = true;
+                    markTelemetryRate(enc_rate_stats_, ros::Time::now());
                 }
 
                 publishEncoderTwist();
@@ -1206,6 +1285,10 @@ private:
             // Legacy format: ODOM,x,y,theta,vx,wz
             // New encoder format: ODOM,avg_dist,left_dist,right_dist
             if (fields.size() >= 5) {
+                {
+                    std::lock_guard<std::mutex> lk(state_mutex_);
+                    markTelemetryRate(odom_rate_stats_, ros::Time::now());
+                }
                 nav_msgs::Odometry odom;
                 odom.header.stamp = ros::Time::now();
                 odom.header.frame_id = "odom";
@@ -1253,6 +1336,10 @@ private:
                 double avg_dist = encoder_prev_avg_dist_m_;
                 double left_dist = encoder_prev_left_dist_m_;
                 double right_dist = encoder_prev_right_dist_m_;
+                {
+                    std::lock_guard<std::mutex> lk(state_mutex_);
+                    markTelemetryRate(odom_rate_stats_, ros::Time::now());
+                }
 
                 if (!parseDoubleField(fields, 0, encoder_prev_avg_dist_m_, avg_dist) ||
                     !parseDoubleField(fields, 1, encoder_prev_left_dist_m_, left_dist) ||
