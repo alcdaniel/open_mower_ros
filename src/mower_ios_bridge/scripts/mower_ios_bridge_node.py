@@ -620,7 +620,7 @@ class IOSBridge:
 
         settings = [
             # ── App iOS ────────────────────────────────────────────────────────
-            self._setting("bridge.manualLinearSpeed", "Velocidad lineal manual",  "App iOS", "number",  self.linear_speed,        "m/s",   0.05, 1.0,  0.05),
+            self._setting("bridge.manualLinearSpeed", "Velocidad lineal manual",  "App iOS", "number",  self.linear_speed,        "m/s",   0.05, 0.45, 0.05),
             self._setting("bridge.manualAngularSpeed", "Velocidad giro manual",   "App iOS", "number",  self.angular_speed,       "rad/s", 0.1,  2.0,  0.1),
             self._setting("bridge.udpBeacon",          "Descubrimiento UDP",      "App iOS", "boolean", 1 if self.beacon_enabled else 0, None, None, None, None),
 
@@ -1479,7 +1479,7 @@ class IOSBridge:
         setting_id = str(body.get("id", ""))
         value = float(body.get("value", 0))
         if setting_id == "bridge.manualLinearSpeed":
-            self.linear_speed = clamp(value, 0.05, 1.0)
+            self.linear_speed = clamp(value, 0.05, 0.45)
             self.state.set_setting(setting_id, self.linear_speed)
             return {"ok": True, "id": setting_id, "value": self.linear_speed}
         elif setting_id == "bridge.manualAngularSpeed":

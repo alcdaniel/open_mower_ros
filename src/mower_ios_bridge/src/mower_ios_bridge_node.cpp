@@ -1410,7 +1410,7 @@ class MowerIosBridgeNode {
     };
 
     add("bridge.manualLinearSpeed", "Velocidad lineal manual", "App iOS", "number",
-        linear_speed_.load(), "m/s", 0.05, 1.0, 0.05);
+        linear_speed_.load(), "m/s", 0.05, 0.45, 0.05);
     add("bridge.manualAngularSpeed", "Velocidad giro manual", "App iOS", "number",
         angular_speed_.load(), "rad/s", 0.1, 2.0, 0.1);
     add("bridge.udpBeacon", "Descubrimiento UDP", "App iOS", "boolean",
@@ -2116,7 +2116,7 @@ class MowerIosBridgeNode {
     const double value = body.value("value", 0.0);
 
     if (setting_id == "bridge.manualLinearSpeed") {
-      const double actual = clampValue(value, 0.05, 1.0);
+      const double actual = clampValue(value, 0.05, 0.45);
       linear_speed_.store(actual);
       return json{{"ok", true}, {"id", setting_id}, {"value", actual}};
     }

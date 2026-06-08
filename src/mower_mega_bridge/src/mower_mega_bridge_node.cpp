@@ -1277,7 +1277,7 @@ private:
         double wz_deg_s = wz * 180.0 / M_PI;   // rad/s to deg/s
 
         // Clamp to valid ranges
-        vx_mm_s = std::max(-1000.0, std::min(1000.0, vx_mm_s));
+        vx_mm_s = std::max(-450.0, std::min(450.0, vx_mm_s));
         wz_deg_s = std::max(-180.0, std::min(180.0, wz_deg_s));
 
         // Format as strings with 1 decimal place
