@@ -72,28 +72,38 @@ namespace ftc_local_planner
 
     bool FTCPlanner::setPlan(const std::vector<geometry_msgs::PoseStamped> &plan)
     {
-        current_state = PRE_ROTATE;
-        state_entered_time = ros::Time::now();
-        is_crashed = false;
+        const bool reset_state = (current_state == FINISHED) || global_plan.empty();
 
-        global_plan = plan;
-        current_index = 0;
-        current_progress = 0.0;
+        if (reset_state)
+        {
+            current_state = PRE_ROTATE;
+            state_entered_time = ros::Time::now();
+            is_crashed = false;
 
-        last_time = ros::Time::now();
-        current_movement_speed = config.speed_slow;
+            current_index = 0;
+            current_progress = 0.0;
 
-        lat_error = 0.0;
-        lon_error = 0.0;
-        angle_error = 0.0;
-        i_lon_error = 0.0;
-        i_lat_error = 0.0;
-        i_angle_error = 0.0;
+            last_time = ros::Time::now();
+            current_movement_speed = config.speed_slow;
+
+            lat_error = 0.0;
+            lon_error = 0.0;
+            angle_error = 0.0;
+            i_lon_error = 0.0;
+            i_lat_error = 0.0;
+            i_angle_error = 0.0;
+        }
 
         nav_msgs::Path path;
 
+        global_plan = plan;
+
         if (global_plan.size() > 2)
         {
+            if (current_index >= global_plan.size() - 2)
+            {
+                current_index = static_cast<uint32_t>(global_plan.size() - 2);
+            }
             // duplicate last point
             global_plan.push_back(global_plan.back());
             // give second from last point last oriantation as the point before that
@@ -109,7 +119,14 @@ namespace ftc_local_planner
         }
         global_plan_pub.publish(path);
 
-        ROS_INFO_STREAM("FTCLocalPlannerROS: Got new global plan with " << plan.size() << " points.");
+        if (reset_state)
+        {
+            ROS_INFO_STREAM("FTCLocalPlannerROS: Got new global plan with " << plan.size() << " points.");
+        }
+        else
+        {
+            ROS_INFO_STREAM_THROTTLE(2.0, "FTCLocalPlannerROS: Updated global plan with " << plan.size() << " points.");
+        }
 
         return true;
     }
