@@ -80,6 +80,9 @@
 #include <std_msgs/Bool.h>
 #include <std_msgs/String.h>
 
+#define MPU6050_GYRO_LSB_PER_DPS 131.0
+#define GYRO_DEADBAND_RAD_S      0.02
+
 // ── Protocol helpers ──────────────────────────────────────────────────────────
 
 static uint8_t xorCs(const std::string& body)
@@ -712,11 +715,14 @@ private:
         imu.orientation.y = cr * sp * cy + sr * cp * sy;
         imu.orientation.z = cr * cp * sy - sr * sp * cy;
 
-        // MPU6050 default sensitivity ~131 LSB/(deg/s)
-        const double dps_to_rads = (kPi / 180.0) / 131.0;
+        // MPU6050 configured at +/-250 dps -> 131 LSB/(deg/s)
+        const double dps_to_rads = (kPi / 180.0) / MPU6050_GYRO_LSB_PER_DPS;
         imu.angular_velocity.x = static_cast<double>(gx_raw) * dps_to_rads;
         imu.angular_velocity.y = static_cast<double>(gy_raw) * dps_to_rads;
         imu.angular_velocity.z = static_cast<double>(gz_raw) * dps_to_rads;
+        if (std::abs(imu.angular_velocity.x) < GYRO_DEADBAND_RAD_S) imu.angular_velocity.x = 0.0;
+        if (std::abs(imu.angular_velocity.y) < GYRO_DEADBAND_RAD_S) imu.angular_velocity.y = 0.0;
+        if (std::abs(imu.angular_velocity.z) < GYRO_DEADBAND_RAD_S) imu.angular_velocity.z = 0.0;
         imu.orientation_covariance[0] = 0.08;
         imu.orientation_covariance[4] = 0.08;
         imu.orientation_covariance[8] = 0.12;

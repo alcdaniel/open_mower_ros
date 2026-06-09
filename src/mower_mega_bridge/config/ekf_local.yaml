@@ -13,8 +13,8 @@ base_link_frame: base_link
 world_frame: odom
 
 # /odom from Mega bridge (nav_msgs/Odometry)
-# Dead-reckoning is unreliable for x,y absolute position (drifts)
-# but vx and angular velocity are decent.
+# Dead-reckoning is unreliable for x,y absolute position (drifts).
+# Keep only forward speed from wheel odometry here; yaw rate comes from IMU.
 # Configuration vector order:
 # [x,     y,     z,
 #  roll,  pitch, yaw,
@@ -25,18 +25,19 @@ odom0: /odom
 odom0_config: [false, false, false,
                false, false, false,
                true,  false, false,
-               false, false, true,
+               false, false, false,
                false, false, false]
 odom0_differential: false
 odom0_relative: false
 odom0_queue_size: 10
 
-# /mega/imu_gyro from Mega bridge (sensor_msgs/Imu — full quaternion + gyro rates)
+# /mega/imu_gyro from Mega bridge.
+# Orientation is currently not trusted for EKF fusion; use only angular velocity z.
 imu0: /mega/imu_gyro
 imu0_config: [false, false, false,
-              true,  true,  true,
               false, false, false,
-              true,  true,  true,
+              false, false, false,
+              false, false, true,
               false, false, false]
 imu0_differential: false
 imu0_relative: false

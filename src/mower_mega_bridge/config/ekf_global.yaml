@@ -12,23 +12,25 @@ odom_frame: odom
 base_link_frame: base_link
 world_frame: map
 
-# /odom from Mega bridge — same config as local but world_frame=map
+# /odom from Mega bridge — same config as local but world_frame=map.
+# Keep only forward speed from wheel odometry here; yaw rate comes from IMU.
 odom0: /odom
 odom0_config: [false, false, false,
                false, false, false,
                true,  false, false,
-               false, false, true,
+               false, false, false,
                false, false, false]
 odom0_differential: false
 odom0_relative: false
 odom0_queue_size: 10
 
-# IMU from Mega
+# IMU from Mega.
+# Orientation is currently not trusted for EKF fusion; use only angular velocity z.
 imu0: /mega/imu_gyro
 imu0_config: [false, false, false,
-              true,  true,  true,
               false, false, false,
-              true,  true,  true,
+              false, false, false,
+              false, false, true,
               false, false, false]
 imu0_differential: false
 imu0_relative: false
