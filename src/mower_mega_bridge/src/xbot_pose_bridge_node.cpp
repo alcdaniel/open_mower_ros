@@ -12,6 +12,12 @@
 
 namespace {
 
+double normalizeAngle(double angle) {
+  while (angle > M_PI) angle -= 2.0 * M_PI;
+  while (angle < -M_PI) angle += 2.0 * M_PI;
+  return angle;
+}
+
 double yawFromQuaternion(const geometry_msgs::Quaternion& q_msg) {
   tf2::Quaternion q;
   tf2::fromMsg(q_msg, q);
@@ -20,12 +26,19 @@ double yawFromQuaternion(const geometry_msgs::Quaternion& q_msg) {
   return yaw;
 }
 
+geometry_msgs::Quaternion quaternionFromYaw(double yaw) {
+  tf2::Quaternion q;
+  q.setRPY(0.0, 0.0, yaw);
+  return tf2::toMsg(q);
+}
+
 }  // namespace
 
 class XbotPoseBridgeNode {
  public:
   XbotPoseBridgeNode() : nh_(), pnh_("~") {
     raw_gps_timeout_s_ = pnh_.param<double>("raw_gps_timeout_s", 2.0);
+    heading_offset_deg_ = pnh_.param<double>("heading_offset_deg", 180.0);
     pose_pub_ = nh_.advertise<xbot_msgs::AbsolutePose>("/xbot_positioning/xb_pose", 10, true);
 
     odom_sub_ = nh_.subscribe("/odometry/filtered_map", 10, &XbotPoseBridgeNode::cbOdom, this);
@@ -82,12 +95,14 @@ class XbotPoseBridgeNode {
 
     // Keep absolute position from raw GPS when available, but always derive
     // heading and motion vector from the filtered odometry/IMU chain.
-    const double yaw = yawFromQuaternion(msg->pose.pose.orientation);
-    pose.pose.pose.orientation = msg->pose.pose.orientation;
-    pose.vehicle_heading = yaw;
-    pose.motion_heading = yaw;
-    pose.motion_vector.x = msg->twist.twist.linear.x * std::cos(yaw);
-    pose.motion_vector.y = msg->twist.twist.linear.x * std::sin(yaw);
+    const double raw_yaw = yawFromQuaternion(msg->pose.pose.orientation);
+    const double corrected_yaw =
+        normalizeAngle(raw_yaw + heading_offset_deg_ * M_PI / 180.0);
+    pose.pose.pose.orientation = quaternionFromYaw(corrected_yaw);
+    pose.vehicle_heading = corrected_yaw;
+    pose.motion_heading = corrected_yaw;
+    pose.motion_vector.x = msg->twist.twist.linear.x * std::cos(corrected_yaw);
+    pose.motion_vector.y = msg->twist.twist.linear.x * std::sin(corrected_yaw);
     pose.motion_vector.z = 0.0;
     pose.orientation_accuracy = 0.2f;
 
@@ -134,6 +149,7 @@ class XbotPoseBridgeNode {
   bool has_raw_gps_ = false;
   bool has_pose_ = false;
   double raw_gps_timeout_s_ = 2.0;
+  double heading_offset_deg_ = 180.0;
   ros::Time last_raw_gps_wall_;
   xbot_msgs::AbsolutePose last_raw_gps_;
   geometry_msgs::Pose last_pose_;
