@@ -146,7 +146,7 @@ class XbotPoseBridgeNode {
       pose.position_accuracy = 999.0f;
       pose.flags |= xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_DEAD_RECKONING;
     } else {
-      pose.pose = msg->pose;
+      pose.pose.covariance = msg->pose.covariance;
       pose.position_accuracy = 999.0f;
       pose.flags |= xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_DEAD_RECKONING;
     }

@@ -1,5 +1,5 @@
 <launch>
-    <arg name="use_xbot_positioning" default="$(optenv OM_XBOT_POSITIONING_ENABLE False)"/>
+    <arg name="use_xbot_positioning" default="$(optenv OM_XBOT_POSITIONING_ENABLE True)"/>
     <arg name="gps_topic" default="/fix"/>
 
     <include file="$(find open_mower)/launch/include/_comms.launch"/>
