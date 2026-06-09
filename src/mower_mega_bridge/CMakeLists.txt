@@ -14,10 +14,13 @@ find_package(catkin REQUIRED COMPONENTS
   xbot_msgs
   xbot_positioning
   serial
+  tf2
+  tf2_geometry_msgs
+  tf2_ros
 )
 
 catkin_package(
-  CATKIN_DEPENDS roscpp geometry_msgs nav_msgs sensor_msgs std_msgs mower_msgs xbot_msgs xbot_positioning serial
+  CATKIN_DEPENDS roscpp geometry_msgs nav_msgs sensor_msgs std_msgs mower_msgs xbot_msgs xbot_positioning serial tf2 tf2_geometry_msgs tf2_ros
 )
 
 include_directories(${catkin_INCLUDE_DIRS})

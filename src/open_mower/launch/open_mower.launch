@@ -7,6 +7,8 @@
     <include if="$(arg use_xbot_positioning)" file="$(find open_mower)/launch/include/_localization.launch"/>
     <include unless="$(arg use_xbot_positioning)" file="$(find mower_mega_bridge)/launch/localization.launch">
         <arg name="gps_topic" value="$(arg gps_topic)"/>
+        <arg name="enable_global_ekf" value="false"/>
+        <arg name="enable_navsat_transform" value="false"/>
     </include>
     <node unless="$(arg use_xbot_positioning)"
           pkg="mower_mega_bridge"

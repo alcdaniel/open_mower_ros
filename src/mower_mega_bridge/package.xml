@@ -20,6 +20,9 @@
   <build_depend>xbot_msgs</build_depend>
   <build_depend>xbot_positioning</build_depend>
   <build_depend>serial</build_depend>
+  <build_depend>tf2</build_depend>
+  <build_depend>tf2_geometry_msgs</build_depend>
+  <build_depend>tf2_ros</build_depend>
 
   <exec_depend>roscpp</exec_depend>
   <exec_depend>geometry_msgs</exec_depend>
@@ -30,5 +33,8 @@
   <exec_depend>xbot_msgs</exec_depend>
   <exec_depend>xbot_positioning</exec_depend>
   <exec_depend>serial</exec_depend>
+  <exec_depend>tf2</exec_depend>
+  <exec_depend>tf2_geometry_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
   <exec_depend>robot_localization</exec_depend>
 </package>
