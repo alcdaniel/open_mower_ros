@@ -18,13 +18,14 @@ DockingFTCPlanner:
   kp_lat: 6.15
   kp_lon: 4.0
   max_cmd_vel_ang: 0.8
-  max_cmd_vel_speed: 0.45
+  # Physical max: wheel 0.18 m @ ~30 rpm = 0.283 m/s. 0.45 was unreachable.
+  max_cmd_vel_speed: 0.28
   max_follow_distance: 1.0
   max_goal_angle_error: 20.0
   max_goal_distance_error: 0.1
   restore_defaults: false
   speed_angular: 40.0
-  speed_fast: 0.1
+  speed_fast: 0.20
   speed_fast_threshold: 5.0
   speed_fast_threshold_angle: 5.0
-  speed_slow: 0.1
+  speed_slow: 0.20
