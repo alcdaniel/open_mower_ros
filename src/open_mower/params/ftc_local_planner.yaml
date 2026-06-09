@@ -18,9 +18,17 @@ FTCPlanner:
   ki_lon: 0.0
   ki_lon_max: 10.0
   kp_ang: 1.4
-  kp_lat: 8.0
+  # Lowered 8.0 -> 4.0: the EKF heading under-tracks fast rotation, so a high
+  # lateral gain slams wz to saturation and the robot serpentines/orbits the
+  # goal instead of converging. Softer lateral correction lets it spiral in.
+  kp_lat: 4.0
   kp_lon: 4.0
-  max_cmd_vel_ang: 0.30
+  # Lowered 0.30 -> 0.20: the EKF (xbot_positioning) heading under-integrates
+  # fast pivots (measured: 85 deg real -> 32 deg estimated), so commanding fast
+  # rotation corrupts the heading and the robot drives off-target. Slower
+  # rotation stays within what the EKF can track -> heading stays accurate.
+  # The Mega min-PWM floor lets these slower turns still execute.
+  max_cmd_vel_ang: 0.20
   max_cmd_vel_speed: 0.28
   max_follow_distance: 2.5
   max_goal_angle_error: 20.0
