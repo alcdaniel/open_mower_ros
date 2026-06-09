@@ -24,7 +24,7 @@
  *   mega/rain                       std_msgs/Bool
  *   mega/tilt                       std_msgs/Bool
  *   mega/wire_detected              std_msgs/Bool
- *   mega/imu                        sensor_msgs/Imu     (yaw only, compass)
+ *   mega/imu                        sensor_msgs/Imu     (mirrors imu_gyro orientation for compatibility)
  *   mega/imu_gyro                   sensor_msgs/Imu     (roll/pitch/yaw + gyro rates)
  *   mega/cfg                        std_msgs/String     (key=value, one per setting)
  *   mega/cfg_loaded                 std_msgs/Bool       (true when full dump received)
@@ -685,6 +685,48 @@ private:
         return "OK";
     }
 
+    sensor_msgs::Imu buildGyroImuMessage(double roll_deg,
+                                         double pitch_deg,
+                                         double yaw_deg,
+                                         int gx_raw,
+                                         int gy_raw,
+                                         int gz_raw,
+                                         const ros::Time& stamp) const
+    {
+        constexpr double kPi = 3.14159265358979323846;
+        const double r = roll_deg * kPi / 180.0;
+        const double p = pitch_deg * kPi / 180.0;
+        const double y = yaw_deg * kPi / 180.0;
+        const double cy = std::cos(y * 0.5);
+        const double sy = std::sin(y * 0.5);
+        const double cp = std::cos(p * 0.5);
+        const double sp = std::sin(p * 0.5);
+        const double cr = std::cos(r * 0.5);
+        const double sr = std::sin(r * 0.5);
+
+        sensor_msgs::Imu imu;
+        imu.header.stamp = stamp;
+        imu.header.frame_id = "base_link";
+        imu.orientation.w = cr * cp * cy + sr * sp * sy;
+        imu.orientation.x = sr * cp * cy - cr * sp * sy;
+        imu.orientation.y = cr * sp * cy + sr * cp * sy;
+        imu.orientation.z = cr * cp * sy - sr * sp * cy;
+
+        // MPU6050 default sensitivity ~131 LSB/(deg/s)
+        const double dps_to_rads = (kPi / 180.0) / 131.0;
+        imu.angular_velocity.x = static_cast<double>(gx_raw) * dps_to_rads;
+        imu.angular_velocity.y = static_cast<double>(gy_raw) * dps_to_rads;
+        imu.angular_velocity.z = static_cast<double>(gz_raw) * dps_to_rads;
+        imu.orientation_covariance[0] = 0.08;
+        imu.orientation_covariance[4] = 0.08;
+        imu.orientation_covariance[8] = 0.12;
+        imu.angular_velocity_covariance[0] = 0.02;
+        imu.angular_velocity_covariance[4] = 0.02;
+        imu.angular_velocity_covariance[8] = 0.02;
+        imu.linear_acceleration_covariance[0] = -1;
+        return imu;
+    }
+
     void logTelemetryRates()
     {
         const ros::Time now = ros::Time::now();
@@ -1132,22 +1174,21 @@ private:
                 compass_deg_ = deg;
                 markTelemetryRate(compass_rate_stats_, ros::Time::now());
             }
-            // Publish as IMU (yaw only) — robot_localization / EKF can fuse this.
-            sensor_msgs::Imu imu;
-            imu.header.stamp    = ros::Time::now();
-            imu.header.frame_id = "base_link";
-            constexpr double kPi = 3.14159265358979323846;
-            double rad = deg * kPi / 180.0;
-            imu.orientation.x = 0.0;
-            imu.orientation.y = 0.0;
-            imu.orientation.z = std::sin(rad / 2.0);
-            imu.orientation.w = std::cos(rad / 2.0);
-            // Roll/pitch unknown; yaw variance ~0.05 rad² (≈±12°)
-            imu.orientation_covariance[0] = 1e6;
-            imu.orientation_covariance[4] = 1e6;
-            imu.orientation_covariance[8] = 0.05;
-            imu.angular_velocity_covariance[0]    = -1;  // not available
-            imu.linear_acceleration_covariance[0] = -1;  // not available
+            // Keep mega/imu alive for compatibility, but make it mirror the
+            // gyro-derived IMU so all consumers see one heading source.
+            double roll = 0.0, pitch = 0.0, yaw = 0.0;
+            int gx = 0, gy = 0, gz = 0;
+            {
+                std::lock_guard<std::mutex> lk(state_mutex_);
+                roll = gyro_roll_deg_;
+                pitch = gyro_pitch_deg_;
+                yaw = gyro_yaw_deg_;
+                gx = gyro_x_raw_;
+                gy = gyro_y_raw_;
+                gz = gyro_z_raw_;
+            }
+            sensor_msgs::Imu imu = buildGyroImuMessage(
+                roll, pitch, yaw, gx, gy, gz, ros::Time::now());
             pub_compass_imu_.publish(imu);
         } else if (type == "GYRO") {
             if (fields.size() >= 6) {
@@ -1173,36 +1214,8 @@ private:
                     gyro_z_raw_ = gz;
                     markTelemetryRate(gyro_rate_stats_, ros::Time::now());
                 }
-                constexpr double kPi = 3.14159265358979323846;
-                const double r = roll * kPi / 180.0;
-                const double p = pitch * kPi / 180.0;
-                const double y = yaw * kPi / 180.0;
-                const double cy = std::cos(y * 0.5);
-                const double sy = std::sin(y * 0.5);
-                const double cp = std::cos(p * 0.5);
-                const double sp = std::sin(p * 0.5);
-                const double cr = std::cos(r * 0.5);
-                const double sr = std::sin(r * 0.5);
-
-                sensor_msgs::Imu imu;
-                imu.header.stamp = ros::Time::now();
-                imu.header.frame_id = "base_link";
-                imu.orientation.w = cr * cp * cy + sr * sp * sy;
-                imu.orientation.x = sr * cp * cy - cr * sp * sy;
-                imu.orientation.y = cr * sp * cy + sr * cp * sy;
-                imu.orientation.z = cr * cp * sy - sr * sp * cy;
-                // MPU6050 default sensitivity ~131 LSB/(deg/s)
-                const double dps_to_rads = (kPi / 180.0) / 131.0;
-                imu.angular_velocity.x = static_cast<double>(gx) * dps_to_rads;
-                imu.angular_velocity.y = static_cast<double>(gy) * dps_to_rads;
-                imu.angular_velocity.z = static_cast<double>(gz) * dps_to_rads;
-                imu.orientation_covariance[0] = 0.08;
-                imu.orientation_covariance[4] = 0.08;
-                imu.orientation_covariance[8] = 0.12;
-                imu.angular_velocity_covariance[0] = 0.02;
-                imu.angular_velocity_covariance[4] = 0.02;
-                imu.angular_velocity_covariance[8] = 0.02;
-                imu.linear_acceleration_covariance[0] = -1;
+                sensor_msgs::Imu imu = buildGyroImuMessage(
+                    roll, pitch, yaw, gx, gy, gz, ros::Time::now());
                 pub_gyro_imu_.publish(imu);
                 pub_ll_imu_raw_.publish(imu);
             }
