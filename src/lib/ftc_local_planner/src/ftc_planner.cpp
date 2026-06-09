@@ -666,12 +666,13 @@ namespace ftc_local_planner
                     applyMinNonZero(cmd_vel.twist.linear.x, config.min_cmd_vel_speed);
             }
 
-            if (std::abs(angle_error) > (3.0 * M_PI / 180.0) ||
-                std::abs(lat_error) > 0.03)
-            {
-                cmd_vel.twist.angular.z =
-                    applyMinNonZero(cmd_vel.twist.angular.z, config.min_cmd_vel_ang);
-            }
+            // If the planner has decided to turn at all, do not let the final
+            // angular command fall into the drivetrain dead zone. Tiny non-zero
+            // wz values (e.g. 0.02-0.06 rad/s) look sensible in simulation but
+            // do nothing on the real mower, which then "thinks" it is
+            // correcting while staying physically stuck.
+            cmd_vel.twist.angular.z =
+                applyMinNonZero(cmd_vel.twist.angular.z, config.min_cmd_vel_ang);
         }
         else
         {
@@ -687,11 +688,8 @@ namespace ftc_local_planner
 
             cmd_vel.twist.angular.z = ang_speed;
 
-            if (std::abs(angle_error) > (3.0 * M_PI / 180.0))
-            {
-                cmd_vel.twist.angular.z =
-                    applyMinNonZero(cmd_vel.twist.angular.z, config.min_cmd_vel_ang);
-            }
+            cmd_vel.twist.angular.z =
+                applyMinNonZero(cmd_vel.twist.angular.z, config.min_cmd_vel_ang);
 
             // check if robot oscillates
             bool is_oscillating = checkOscillation(cmd_vel);
