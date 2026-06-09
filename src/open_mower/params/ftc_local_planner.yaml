@@ -17,10 +17,10 @@ FTCPlanner:
   ki_lat_max: 62.0
   ki_lon: 0.0
   ki_lon_max: 10.0
-  kp_ang: 1.8
+  kp_ang: 1.0
   kp_lat: 8.0
   kp_lon: 4.0
-  max_cmd_vel_ang: 0.3
+  max_cmd_vel_ang: 0.15
   max_cmd_vel_speed: 0.28
   max_follow_distance: 2.5
   max_goal_angle_error: 20.0
