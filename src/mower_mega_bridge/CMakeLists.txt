@@ -11,11 +11,13 @@ find_package(catkin REQUIRED COMPONENTS
   sensor_msgs
   std_msgs
   mower_msgs
+  xbot_msgs
+  xbot_positioning
   serial
 )
 
 catkin_package(
-  CATKIN_DEPENDS roscpp geometry_msgs nav_msgs sensor_msgs std_msgs mower_msgs serial
+  CATKIN_DEPENDS roscpp geometry_msgs nav_msgs sensor_msgs std_msgs mower_msgs xbot_msgs xbot_positioning serial
 )
 
 include_directories(${catkin_INCLUDE_DIRS})
@@ -27,3 +29,7 @@ add_dependencies(mower_mega_bridge_node mower_msgs_generate_messages_cpp)
 add_executable(calibrate_odom_gain_node src/calibrate_odom_gain_node.cpp)
 target_link_libraries(calibrate_odom_gain_node ${catkin_LIBRARIES})
 add_dependencies(calibrate_odom_gain_node mower_msgs_generate_messages_cpp)
+
+add_executable(xbot_pose_bridge_node src/xbot_pose_bridge_node.cpp)
+target_link_libraries(xbot_pose_bridge_node ${catkin_LIBRARIES})
+add_dependencies(xbot_pose_bridge_node mower_msgs_generate_messages_cpp xbot_msgs_generate_messages_cpp)

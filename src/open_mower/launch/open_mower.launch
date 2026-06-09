@@ -4,6 +4,13 @@
     <include file="$(find open_mower)/launch/include/_comms.launch"/>
     <include file="$(find open_mower)/launch/include/_move_base.launch"/>
     <include if="$(arg use_xbot_positioning)" file="$(find open_mower)/launch/include/_localization.launch"/>
+    <node unless="$(arg use_xbot_positioning)"
+          pkg="mower_mega_bridge"
+          type="xbot_pose_bridge_node"
+          name="xbot_pose_bridge"
+          output="screen"
+          respawn="true"
+          respawn_delay="5"/>
     <include file="$(find open_mower)/launch/include/_teleop.launch"/>
     <include file="$(find open_mower)/launch/include/_record.launch">
         <arg name="prefix" value="mow_area"/>
