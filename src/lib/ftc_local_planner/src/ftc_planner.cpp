@@ -546,9 +546,15 @@ namespace ftc_local_planner
         last_lon_error = lon_error;
         last_angle_error = angle_error;
 
-        // allow linear movement only if in following state
-
-        if (current_state == FOLLOWING)
+        // Linear drive is allowed in FOLLOWING (chase the moving control point)
+        // AND in WAITING_FOR_GOAL_APPROACH. The control point is virtual and
+        // marches along the plan at speed_slow without waiting for the robot; on
+        // a slow/curving drivetrain the robot falls behind, the carrot reaches
+        // the plan end (-> position mode) while the robot is still ~1 m short,
+        // and position mode previously commanded vx=0 (rotate only) -> the robot
+        // sat there until goal_timeout and was declared "arrived" metres away.
+        // Letting it drive toward the goal point in position mode closes the gap.
+        if (current_state == FOLLOWING || current_state == WAITING_FOR_GOAL_APPROACH)
         {
             double lin_speed = lon_error * config.kp_lon + i_lon_error * config.ki_lon + d_lon * config.kd_lon;
             if (lin_speed < 0 && config.forward_only)
