@@ -13,6 +13,21 @@ PLUGINLIB_EXPORT_CLASS(ftc_local_planner::FTCPlanner, mbf_costmap_core::CostmapC
 
 namespace ftc_local_planner
 {
+    namespace
+    {
+        double applyMinNonZero(double value, double min_abs)
+        {
+            if (min_abs <= 0.0 || std::abs(value) < 1e-6)
+            {
+                return value;
+            }
+            if (std::abs(value) >= min_abs)
+            {
+                return value;
+            }
+            return value > 0.0 ? min_abs : -min_abs;
+        }
+    }
 
     FTCPlanner::FTCPlanner()
     {
@@ -586,6 +601,12 @@ namespace ftc_local_planner
             {
                 cmd_vel.twist.linear.x = 0.0;
             }
+
+            if (cmd_vel.twist.linear.x > 0.0)
+            {
+                cmd_vel.twist.linear.x =
+                    applyMinNonZero(cmd_vel.twist.linear.x, config.min_cmd_vel_speed);
+            }
         }
         else
         {
@@ -639,6 +660,18 @@ namespace ftc_local_planner
             }
 
             cmd_vel.twist.linear.x *= linear_scale;
+            if (cmd_vel.twist.linear.x > 0.0)
+            {
+                cmd_vel.twist.linear.x =
+                    applyMinNonZero(cmd_vel.twist.linear.x, config.min_cmd_vel_speed);
+            }
+
+            if (std::abs(angle_error) > (3.0 * M_PI / 180.0) ||
+                std::abs(lat_error) > 0.03)
+            {
+                cmd_vel.twist.angular.z =
+                    applyMinNonZero(cmd_vel.twist.angular.z, config.min_cmd_vel_ang);
+            }
         }
         else
         {
@@ -653,6 +686,12 @@ namespace ftc_local_planner
             }
 
             cmd_vel.twist.angular.z = ang_speed;
+
+            if (std::abs(angle_error) > (3.0 * M_PI / 180.0))
+            {
+                cmd_vel.twist.angular.z =
+                    applyMinNonZero(cmd_vel.twist.angular.z, config.min_cmd_vel_ang);
+            }
 
             // check if robot oscillates
             bool is_oscillating = checkOscillation(cmd_vel);

@@ -1,7 +1,7 @@
 FTCPlanner:
-  # Mower physical drive envelope: min movable ~0.20 m/s, max ~0.28 m/s
-  # (wheel 0.18 m @ ~30 rpm). Commanding below 0.20 m/s just stalls/creeps,
-  # so the linear speeds are floored at 0.20 and capped at the physical max.
+  # The drivetrain needs a minimum effective command to break static friction.
+  # Below ~0.08 m/s linear or ~0.24 rad/s angular, the planner can ask for a
+  # correction that is mathematically valid but physically too weak to move.
   acceleration: 0.15
   check_obstacles: false
   oscillation_recovery: false
@@ -23,13 +23,12 @@ FTCPlanner:
   # goal instead of converging. Softer lateral correction lets it spiral in.
   kp_lat: 4.0
   kp_lon: 4.0
-  # Lowered 0.30 -> 0.20: the EKF (xbot_positioning) heading under-integrates
-  # fast pivots (measured: 85 deg real -> 32 deg estimated), so commanding fast
-  # rotation corrupts the heading and the robot drives off-target. Slower
-  # rotation stays within what the EKF can track -> heading stays accurate.
-  # The Mega min-PWM floor lets these slower turns still execute.
-  max_cmd_vel_ang: 0.20
+  # Raised slightly from 0.20 to 0.30 so the automatic heading corrections are
+  # still trackable but no longer sit below the mower's real breakaway torque.
+  max_cmd_vel_ang: 0.30
   max_cmd_vel_speed: 0.28
+  min_cmd_vel_ang: 0.24
+  min_cmd_vel_speed: 0.08
   max_follow_distance: 2.5
   max_goal_angle_error: 20.0
   max_goal_distance_error: 0.2
