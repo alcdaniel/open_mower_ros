@@ -49,37 +49,52 @@ class XbotPoseBridgeNode {
 
   void cbOdom(const nav_msgs::Odometry::ConstPtr& msg) {
     xbot_msgs::AbsolutePose pose;
-    pose.header.stamp = ros::Time::now();
-    pose.header.frame_id = msg->header.frame_id.empty() ? "map" : msg->header.frame_id;
-    pose.sensor_stamp = 0;
-    pose.received_stamp = 0;
-    pose.source = xbot_msgs::AbsolutePose::SOURCE_SENSOR_FUSION;
-    pose.flags = xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_DEAD_RECKONING;
+    bool used_raw_gps_position = false;
+
+    {
+      std::lock_guard<std::mutex> lk(mutex_);
+      if (gps_enabled_ && has_raw_gps_ &&
+          (ros::Time::now() - last_raw_gps_wall_).toSec() <= raw_gps_timeout_s_) {
+        pose = last_raw_gps_;
+        used_raw_gps_position = true;
+      }
+    }
+
+    if (!used_raw_gps_position) {
+      pose.header.stamp = ros::Time::now();
+      pose.header.frame_id = msg->header.frame_id.empty() ? "map" : msg->header.frame_id;
+      pose.sensor_stamp = 0;
+      pose.received_stamp = 0;
+      pose.source = xbot_msgs::AbsolutePose::SOURCE_SENSOR_FUSION;
+      pose.flags = xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_DEAD_RECKONING;
+      pose.pose = msg->pose;
+      pose.position_accuracy = 999.0f;
+    }
+
     pose.orientation_valid = 1;
     pose.motion_vector_valid = 1;
-    pose.pose = msg->pose;
-
-    const double yaw = yawFromQuaternion(msg->pose.pose.orientation);
-    pose.vehicle_heading = yaw;
-    pose.motion_heading = yaw;
-
-    pose.motion_vector.x = msg->twist.twist.linear.x * std::cos(yaw);
-    pose.motion_vector.y = msg->twist.twist.linear.x * std::sin(yaw);
-    pose.motion_vector.z = 0.0;
-
-    pose.position_accuracy = 999.0f;
-    pose.orientation_accuracy = 0.2f;
 
     {
       std::lock_guard<std::mutex> lk(mutex_);
       last_pose_ = pose.pose.pose;
       has_pose_ = true;
+    }
 
-      if (gps_enabled_ && has_raw_gps_ &&
-          (ros::Time::now() - last_raw_gps_wall_).toSec() <= raw_gps_timeout_s_) {
-        pose.position_accuracy = last_raw_gps_.position_accuracy;
-        pose.flags |= xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE;
-      }
+    // Keep absolute position from raw GPS when available, but always derive
+    // heading and motion vector from the filtered odometry/IMU chain.
+    const double yaw = yawFromQuaternion(msg->pose.pose.orientation);
+    pose.pose.pose.orientation = msg->pose.pose.orientation;
+    pose.vehicle_heading = yaw;
+    pose.motion_heading = yaw;
+    pose.motion_vector.x = msg->twist.twist.linear.x * std::cos(yaw);
+    pose.motion_vector.y = msg->twist.twist.linear.x * std::sin(yaw);
+    pose.motion_vector.z = 0.0;
+    pose.orientation_accuracy = 0.2f;
+
+    if (used_raw_gps_position) {
+      pose.flags |= xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_RECENT_ABSOLUTE_POSE;
+    } else {
+      pose.flags |= xbot_msgs::AbsolutePose::FLAG_SENSOR_FUSION_DEAD_RECKONING;
     }
 
     pose_pub_.publish(pose);
