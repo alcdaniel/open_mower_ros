@@ -1041,7 +1041,17 @@ private:
             // BLADE,<enabled>,<physically_running>
             const bool blade_enabled = !fields.empty() && fields[0] == "1";
             const bool blade_running = fields.size() >= 2 && fields[1] == "1";
-            mow_enabled_ = blade_running;
+            // Report the COMMANDED state (blade_enabled), not the physical spin
+            // state. mower_logic re-issues setMowerEnabled every 0.5s whenever the
+            // reported mow_enabled differs from what it wants. If we report the
+            // physical running state and the blade does not actually spin (HW
+            // fault), that mismatch is permanent -> a BLADE ON command is sent
+            // every 0.5s, each one stalls the Mega loop (blade spin-up) -> ENC/TF
+            // telemetry drops to ~3 Hz -> "Costmap2DROS transform timeout" -> the
+            // local planner loses the pose mid-mow. Reporting the commanded state
+            // lets the command be sent ONCE and stay on. The physical-not-running
+            // condition is still surfaced by the warning below.
+            mow_enabled_ = blade_enabled;
 
             mower_msgs::Status sm;
             {
@@ -1050,7 +1060,7 @@ private:
                     (mega_state_ == "IDLE" || mega_state_ == "PARKED" || mega_state_ == "DOCKED")
                     ? mower_msgs::Status::MOWER_STATUS_INITIALIZING
                     : mower_msgs::Status::MOWER_STATUS_OK;
-                sm.mow_enabled = blade_running;
+                sm.mow_enabled = blade_enabled;  // commanded state (see note above)
                 sm.is_charging = (charging_ > 0);
             }
             pub_status_.publish(sm);
