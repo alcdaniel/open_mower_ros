@@ -17,6 +17,10 @@
                 respawn="true"
                 respawn_delay="5"
                 unless="$(optenv OM_NO_GPS False)">
+            <!-- Expose a standard NavSatFix topic for navsat_transform/robot_localization. -->
+            <remap from="fix" to="/fix"/>
+            <remap from="~fix" to="/fix"/>
+            <remap from="/ublox/fix" to="/fix"/>
             <remap from="/ll/services/rtcm" to="/ll/position/gps/rtcm"/>
             <remap from="/nmea" to="/ll/position/gps/nmea"/>
             <remap from="~xb_pose" to="/ll/position/gps"/>
@@ -56,6 +60,10 @@
             <param name="datum_long" value="$(optenv OM_DATUM_LONG 0.0)" unless="$(optenv OM_USE_RELATIVE_POSITION False)"/>
             <param name="datum_height" value="0" unless="$(optenv OM_USE_RELATIVE_POSITION False)"/>
 
+            <!-- Expose a standard NavSatFix topic for navsat_transform/robot_localization. -->
+            <remap from="fix" to="/fix"/>
+            <remap from="~fix" to="/fix"/>
+            <remap from="/ublox/fix" to="/fix"/>
             <remap from="/ll/services/rtcm" to="/ll/position/gps/rtcm"/>
             <remap from="/nmea" to="/ll/position/gps/nmea"/>
             <remap from="~xb_pose" to="/ll/position/gps"/>
